@@ -209,23 +209,6 @@ public class CuratorDruidLeaderSelector implements DruidLeaderSelector
     listenerExecutor.shutdownNow();
   }
 
-  // Method to handle connection state changes
-  private void handleConnectionStateChanged(CuratorFramework client, ConnectionState newState)
-  {
-    switch (newState) {
-      case SUSPENDED:
-      case LOST:
-        recreateLeaderLatch();
-        break;
-      case RECONNECTED:
-        // Connection reestablished, no action needed here
-        break;
-      default:
-        // Do nothing for other states
-        break;
-    }
-  }
-
   private void recreateLeaderLatch()
   {
     // Close existing leader latch
