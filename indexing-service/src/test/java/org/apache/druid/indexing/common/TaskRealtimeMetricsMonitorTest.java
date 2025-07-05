@@ -27,7 +27,7 @@ import org.apache.druid.java.util.emitter.service.ServiceEventBuilder;
 import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
 import org.apache.druid.query.DruidMetrics;
 import org.apache.druid.segment.incremental.RowIngestionMeters;
-import org.apache.druid.segment.realtime.FireDepartment;
+import org.apache.druid.segment.realtime.SegmentGenerationMetrics;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -52,9 +52,8 @@ public class TaskRealtimeMetricsMonitorTest
   );
 
   private static final Map<String, Object> TAGS = ImmutableMap.of("author", "Author Name", "version", 10);
+  private SegmentGenerationMetrics segmentGenerationMetrics;
 
-  @Mock(answer = Answers.RETURNS_MOCKS)
-  private FireDepartment fireDepartment;
   @Mock(answer = Answers.RETURNS_MOCKS)
   private RowIngestionMeters rowIngestionMeters;
   @Mock
@@ -66,6 +65,7 @@ public class TaskRealtimeMetricsMonitorTest
   public void setUp()
   {
     emittedEvents = new HashMap<>();
+    segmentGenerationMetrics = new SegmentGenerationMetrics();
     Mockito.doCallRealMethod().when(emitter).emit(ArgumentMatchers.any(ServiceEventBuilder.class));
     Mockito
         .doAnswer(invocation -> {
@@ -74,7 +74,7 @@ public class TaskRealtimeMetricsMonitorTest
           return null;
         })
         .when(emitter).emit(ArgumentMatchers.any(Event.class));
-    target = new TaskRealtimeMetricsMonitor(fireDepartment, rowIngestionMeters, DIMENSIONS, TAGS);
+    target = new TaskRealtimeMetricsMonitor(segmentGenerationMetrics, rowIngestionMeters, DIMENSIONS, TAGS);
   }
 
   @Test
@@ -89,9 +89,28 @@ public class TaskRealtimeMetricsMonitorTest
   @Test
   public void testdoMonitorWithoutTagsShouldNotEmitTags()
   {
-    target = new TaskRealtimeMetricsMonitor(fireDepartment, rowIngestionMeters, DIMENSIONS, null);
+    target = new TaskRealtimeMetricsMonitor(segmentGenerationMetrics, rowIngestionMeters, DIMENSIONS, null);
     for (ServiceMetricEvent sme : emittedEvents.values()) {
       Assert.assertFalse(sme.getUserDims().containsKey(DruidMetrics.TAGS));
     }
+  }
+
+  @Test
+  public void testMessageGapAggStats()
+  {
+    target = new TaskRealtimeMetricsMonitor(segmentGenerationMetrics, rowIngestionMeters, DIMENSIONS, null);
+
+    target.doMonitor(emitter);
+    Assert.assertFalse(emittedEvents.containsKey("ingest/events/minMessageGap"));
+    Assert.assertFalse(emittedEvents.containsKey("ingest/events/maxMessageGap"));
+    Assert.assertFalse(emittedEvents.containsKey("ingest/events/avgMessageGap"));
+
+    emittedEvents.clear();
+    segmentGenerationMetrics.reportMessageGap(1);
+    target.doMonitor(emitter);
+
+    Assert.assertTrue(emittedEvents.containsKey("ingest/events/minMessageGap"));
+    Assert.assertTrue(emittedEvents.containsKey("ingest/events/maxMessageGap"));
+    Assert.assertTrue(emittedEvents.containsKey("ingest/events/avgMessageGap"));
   }
 }

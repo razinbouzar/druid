@@ -17,7 +17,7 @@
  */
 
 import { Intent, Tag } from '@blueprintjs/core';
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 import { FormGroupWithInfo, PopoverText } from '../../components';
 import { SuggestibleInput } from '../../components/suggestible-input/suggestible-input';
@@ -58,9 +58,9 @@ export const KillDatasourceDialog = function KillDatasourceDialog(
       className="kill-datasource-dialog"
       action={async () => {
         const resp = await Api.instance.delete(
-          `/druid/coordinator/v1/datasources/${Api.encodePath(
-            datasource,
-          )}?kill=true&interval=${Api.encodePath(interval)}`,
+          `/druid/indexer/v1/datasources/${Api.encodePath(datasource)}/intervals/${Api.encodePath(
+            interval.replace(/\//g, '_'),
+          )}`,
           {},
         );
         return resp.data;

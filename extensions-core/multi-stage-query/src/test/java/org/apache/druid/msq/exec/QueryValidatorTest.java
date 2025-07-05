@@ -27,7 +27,7 @@ import org.apache.druid.msq.kernel.QueryDefinitionBuilder;
 import org.apache.druid.msq.kernel.StageDefinition;
 import org.apache.druid.msq.kernel.StageDefinitionBuilder;
 import org.apache.druid.msq.kernel.WorkOrder;
-import org.apache.druid.msq.querykit.common.OffsetLimitFrameProcessorFactory;
+import org.apache.druid.msq.querykit.common.OffsetLimitStageProcessor;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
@@ -108,6 +108,7 @@ public class QueryValidatorTest
         Collections.singletonList(() -> inputFiles), // Slice with a large number of inputFiles
         null,
         null,
+        null,
         null
     );
 
@@ -125,7 +126,7 @@ public class QueryValidatorTest
     QueryValidator.validateWorkOrder(workOrder);
   }
 
-  private static QueryDefinition createQueryDefinition(int numColumns, int numWorkers)
+  public static QueryDefinition createQueryDefinition(int numColumns, int numWorkers)
   {
     QueryDefinitionBuilder builder = QueryDefinition.builder(UUID.randomUUID().toString());
 
@@ -133,8 +134,8 @@ public class QueryValidatorTest
     builder.add(stageBuilder);
     stageBuilder.maxWorkerCount(numWorkers);
 
-    // Need to have *some* processorFactory.
-    stageBuilder.processorFactory(new OffsetLimitFrameProcessorFactory(1, 1L));
+    // Need to have *some* processor.
+    stageBuilder.processor(new OffsetLimitStageProcessor(1, 1L));
 
     RowSignature.Builder rowSignatureBuilder = RowSignature.builder();
     IntStream.range(0, numColumns).forEach(col -> rowSignatureBuilder.add("col_" + col, ColumnType.STRING));

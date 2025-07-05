@@ -21,6 +21,7 @@ package org.apache.druid.msq.exec;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.inject.Injector;
+import org.apache.druid.indexing.common.TaskLockType;
 import org.apache.druid.indexing.common.actions.TaskActionClient;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.emitter.service.ServiceEmitter;
@@ -28,9 +29,10 @@ import org.apache.druid.msq.indexing.MSQSpec;
 import org.apache.druid.msq.input.InputSpecSlicer;
 import org.apache.druid.msq.input.table.SegmentsInputSlice;
 import org.apache.druid.msq.input.table.TableInputSpec;
-import org.apache.druid.msq.kernel.QueryDefinition;
 import org.apache.druid.msq.kernel.controller.ControllerQueryKernelConfig;
 import org.apache.druid.server.DruidNode;
+
+import java.io.File;
 
 /**
  * Context used by multi-stage query controllers. Useful because it allows test fixtures to provide their own
@@ -39,9 +41,16 @@ import org.apache.druid.server.DruidNode;
 public interface ControllerContext
 {
   /**
+   * Globally unique identifier for the query handled by this controller. This is used to set
+   * {@link org.apache.druid.msq.kernel.QueryDefinition#getQueryId}. Must be globally unique because this is used for
+   * identifying workers, naming temporary files, etc.
+   */
+  String queryId();
+
+  /**
    * Configuration for {@link org.apache.druid.msq.kernel.controller.ControllerQueryKernel}.
    */
-  ControllerQueryKernelConfig queryKernelConfig(MSQSpec querySpec, QueryDefinition queryDef);
+  ControllerQueryKernelConfig queryKernelConfig(MSQSpec querySpec);
 
   /**
    * Callback from the controller implementation to "register" the controller. Used in the indexing task implementation
@@ -55,9 +64,10 @@ public interface ControllerContext
   ObjectMapper jsonMapper();
 
   /**
-   * Emit a metric using a {@link ServiceEmitter}.
+   * Emit the metric in the {@link MSQMetriceEventBuilder} using a {@link ServiceEmitter}. Might sets up addtional
+   * context dependant dimensions.
    */
-  void emitMetric(String metric, Number value);
+  void emitMetric(MSQMetriceEventBuilder metricBuilder);
 
   /**
    * Provides a way for tasks to request injectable objects. Useful because tasks are not able to request injection
@@ -73,7 +83,7 @@ public interface ControllerContext
   /**
    * Provides an {@link InputSpecSlicer} that slices {@link TableInputSpec} into {@link SegmentsInputSlice}.
    */
-  InputSpecSlicer newTableInputSpecSlicer();
+  InputSpecSlicer newTableInputSpecSlicer(WorkerManager workerManager);
 
   /**
    * Provide access to segment actions in the Overlord. Only called for ingestion queries, i.e., where
@@ -82,11 +92,16 @@ public interface ControllerContext
   TaskActionClient taskActionClient();
 
   /**
+   * Task lock type.
+   */
+  TaskLockType taskLockType();
+
+  /**
    * Provides services about workers: starting, canceling, obtaining status.
    *
    * @param queryId               query ID
    * @param querySpec             query spec
-   * @param queryKernelConfig     config from {@link #queryKernelConfig(MSQSpec, QueryDefinition)}
+   * @param queryKernelConfig     config from {@link #queryKernelConfig(MSQSpec)}
    * @param workerFailureListener listener that receives callbacks when workers fail
    */
   WorkerManager newWorkerManager(
@@ -95,6 +110,14 @@ public interface ControllerContext
       ControllerQueryKernelConfig queryKernelConfig,
       WorkerFailureListener workerFailureListener
   );
+
+  /**
+   * Fetch a directory for temporary outputs
+   */
+  default File taskTempDir()
+  {
+    throw new UnsupportedOperationException();
+  }
 
   /**
    * Client for communicating with workers.

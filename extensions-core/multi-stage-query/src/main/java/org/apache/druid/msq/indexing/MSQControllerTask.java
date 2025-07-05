@@ -52,12 +52,18 @@ import org.apache.druid.msq.indexing.destination.DataSourceMSQDestination;
 import org.apache.druid.msq.indexing.destination.DurableStorageMSQDestination;
 import org.apache.druid.msq.indexing.destination.ExportMSQDestination;
 import org.apache.druid.msq.indexing.destination.MSQDestination;
+import org.apache.druid.msq.indexing.destination.TaskReportMSQDestination;
+import org.apache.druid.msq.indexing.error.CancellationReason;
+import org.apache.druid.msq.sql.MSQTaskQueryKitSpecFactory;
 import org.apache.druid.msq.util.MultiStageQueryContext;
+import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryContext;
+import org.apache.druid.query.QueryContexts;
 import org.apache.druid.rpc.ServiceClientFactory;
 import org.apache.druid.rpc.StandardRetryPolicy;
 import org.apache.druid.rpc.indexing.OverlordClient;
 import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.server.coordination.BroadcastDatasourceLoadingSpec;
 import org.apache.druid.server.lookup.cache.LookupLoadingSpec;
 import org.apache.druid.server.security.Resource;
 import org.apache.druid.server.security.ResourceAction;
@@ -76,9 +82,10 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
 {
   public static final String TYPE = "query_controller";
   public static final String DUMMY_DATASOURCE_FOR_SELECT = "__query_select";
+  public static final String DUMMY_DATASOURCE_FOR_EXPORT = "__query_export";
   private static final Logger log = new Logger(MSQControllerTask.class);
 
-  private final MSQSpec querySpec;
+  private final LegacyMSQSpec querySpec;
 
   /**
    * Enables users, and the web console, to see the original SQL query (if any). Not used by anything else in Druid.
@@ -116,7 +123,7 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
   @JsonCreator
   public MSQControllerTask(
       @JsonProperty("id") @Nullable String id,
-      @JsonProperty("spec") MSQSpec querySpec,
+      @JsonProperty("spec") LegacyMSQSpec querySpec,
       @JsonProperty("sqlQuery") @Nullable String sqlQuery,
       @JsonProperty("sqlQueryContext") @Nullable Map<String, Object> sqlQueryContext,
       @JsonProperty("sqlResultsContext") @Nullable SqlResults.Context sqlResultsContext,
@@ -143,6 +150,22 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
     addToContext(Tasks.FORCE_TIME_CHUNK_LOCK_KEY, true);
   }
 
+  public MSQControllerTask(
+      @Nullable String id,
+      LegacyMSQSpec querySpec,
+      @Nullable String sqlQuery,
+      @Nullable Map<String, Object> sqlQueryContext,
+      @Nullable SqlResults.Context sqlResultsContext,
+      @Nullable List<SqlTypeName> sqlTypeNames,
+      @Nullable List<ColumnType> nativeTypeNames,
+      @Nullable Map<String, Object> context,
+      Injector injector
+  )
+  {
+    this(id, querySpec, sqlQuery, sqlQueryContext, sqlResultsContext, sqlTypeNames, nativeTypeNames, context);
+    this.injector = injector;
+  }
+
   @Override
   public String getType()
   {
@@ -165,7 +188,7 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
   }
 
   @JsonProperty("spec")
-  public MSQSpec getQuerySpec()
+  public LegacyMSQSpec getQuerySpec()
   {
     return querySpec;
   }
@@ -216,8 +239,7 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
   {
     // If we're in replace mode, acquire locks for all intervals before declaring the task ready.
     if (isIngestion(querySpec) && ((DataSourceMSQDestination) querySpec.getDestination()).isReplaceTimeChunks()) {
-      final TaskLockType taskLockType =
-          MultiStageQueryContext.validateAndGetTaskLockType(QueryContext.of(querySpec.getQuery().getContext()), true);
+      final TaskLockType taskLockType = getTaskLockType();
       final List<Interval> intervals =
           ((DataSourceMSQDestination) querySpec.getDestination()).getReplaceTimeChunks();
       log.debug(
@@ -256,10 +278,10 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
     );
 
     controller = new ControllerImpl(
-        this.getId(),
         querySpec,
         new ResultsContext(getSqlTypeNames(), getSqlResultsContext()),
-        context
+        context,
+        injector.getInstance(MSQTaskQueryKitSpecFactory.class)
     );
 
     final TaskReportQueryListener queryListener = new TaskReportQueryListener(
@@ -278,7 +300,7 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
   public void stopGracefully(final TaskConfig taskConfig)
   {
     if (controller != null) {
-      controller.stop();
+      controller.stop(CancellationReason.TASK_SHUTDOWN);
     }
   }
 
@@ -288,12 +310,34 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
     return getContextValue(Tasks.PRIORITY_KEY, Tasks.DEFAULT_BATCH_INDEX_TASK_PRIORITY);
   }
 
-  private static String getDataSourceForTaskMetadata(final MSQSpec querySpec)
+  @Nullable
+  public TaskLockType getTaskLockType()
+  {
+    if (isIngestion(querySpec)) {
+      return MultiStageQueryContext.validateAndGetTaskLockType(
+          QueryContext.of(
+              // Use the task context and override with the query context
+              QueryContexts.override(
+                  getContext(),
+                  querySpec.getContext().asMap()
+              )
+          ),
+          ((DataSourceMSQDestination) querySpec.getDestination()).isReplaceTimeChunks()
+      );
+    } else {
+      // Locks need to be acquired only if data is being ingested into a DataSource
+      return null;
+    }
+  }
+
+  private static String getDataSourceForTaskMetadata(final LegacyMSQSpec querySpec)
   {
     final MSQDestination destination = querySpec.getDestination();
 
     if (destination instanceof DataSourceMSQDestination) {
       return ((DataSourceMSQDestination) destination).getDataSource();
+    } else if (destination instanceof ExportMSQDestination) {
+      return DUMMY_DATASOURCE_FOR_EXPORT;
     } else {
       return DUMMY_DATASOURCE_FOR_SELECT;
     }
@@ -305,39 +349,70 @@ public class MSQControllerTask extends AbstractTask implements ClientTaskQuery, 
     return querySpec.getDestination().getDestinationResource();
   }
 
+  /**
+   * Checks whether the task is an ingestion into a Druid datasource.
+   */
   public static boolean isIngestion(final MSQSpec querySpec)
   {
-    return querySpec.getDestination() instanceof DataSourceMSQDestination;
+    return isIngestion(querySpec.getDestination());
   }
 
-  public static boolean isExport(final MSQSpec querySpec)
+  /**
+   * Checks whether the task is an ingestion into a Druid datasource.
+   */
+  public static boolean isIngestion(MSQDestination destination)
   {
-    return querySpec.getDestination() instanceof ExportMSQDestination;
+    return destination instanceof DataSourceMSQDestination;
+  }
+
+  /**
+   * Checks whether the task is an export into external files.
+   */
+  public static boolean isExport(MSQDestination destination)
+  {
+    return destination instanceof ExportMSQDestination;
+  }
+
+  /**
+   * Checks whether the task is an async query which writes frame files containing the final results into durable storage.
+   */
+  public static boolean writeFinalStageResultsToDurableStorage(final MSQDestination destination)
+  {
+    return destination instanceof DurableStorageMSQDestination;
+  }
+
+  /**
+   * Checks whether the task is an async query which writes frame files containing the final results into durable storage.
+   */
+  public static boolean writeFinalResultsToTaskReport(final MSQDestination destination)
+  {
+    return destination instanceof TaskReportMSQDestination;
   }
 
   /**
    * Returns true if the task reads from the same table as the destination. In this case, we would prefer to fail
    * instead of reading any unused segments to ensure that old data is not read.
    */
-  public static boolean isReplaceInputDataSourceTask(MSQSpec querySpec)
+  public static boolean isReplaceInputDataSourceTask(Query<?> query, MSQDestination destination)
   {
-    if (isIngestion(querySpec)) {
-      final String targetDataSource = ((DataSourceMSQDestination) querySpec.getDestination()).getDataSource();
-      final Set<String> sourceTableNames = querySpec.getQuery().getDataSource().getTableNames();
+    if (isIngestion(destination)) {
+      final String targetDataSource = ((DataSourceMSQDestination) destination).getDataSource();
+      final Set<String> sourceTableNames = query.getDataSource().getTableNames();
       return sourceTableNames.contains(targetDataSource);
     } else {
       return false;
     }
   }
 
-  public static boolean writeResultsToDurableStorage(final MSQSpec querySpec)
-  {
-    return querySpec.getDestination() instanceof DurableStorageMSQDestination;
-  }
-
   @Override
   public LookupLoadingSpec getLookupLoadingSpec()
   {
     return LookupLoadingSpec.NONE;
+  }
+
+  @Override
+  public BroadcastDatasourceLoadingSpec getBroadcastDatasourceLoadingSpec()
+  {
+    return BroadcastDatasourceLoadingSpec.NONE;
   }
 }

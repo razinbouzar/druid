@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 
-import type { QueryResult } from '@druid-toolkit/query';
-import { QueryRunner, T } from '@druid-toolkit/query';
+import type { QueryResult } from 'druid-query-toolkit';
+import { QueryRunner, T } from 'druid-query-toolkit';
 import React from 'react';
 
 import { Loader, RecordTablePane } from '../../../components';
@@ -43,7 +43,7 @@ export const DatasourcePreviewPane = React.memo(function DatasourcePreviewPane(
       let result: QueryResult;
       try {
         result = await queryRunner.runQuery({
-          query: `SELECT * FROM ${T(datasource)}`,
+          query: `SELECT * FROM ${T(datasource)} ORDER BY __time DESC`,
           extraQueryContext: { sqlOuterLimit: 100 },
           cancelToken,
         });

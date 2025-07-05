@@ -29,8 +29,8 @@ import org.apache.druid.catalog.model.table.DatasourceDefn;
 import org.apache.druid.catalog.model.table.TableBuilder;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.logger.Logger;
-import org.apache.druid.msq.sql.SqlTaskStatus;
 import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.http.SqlTaskStatus;
 import org.apache.druid.sql.http.SqlQuery;
 import org.apache.druid.testing.utils.DataLoaderHelper;
 import org.apache.druid.testing.utils.MsqTestQueryHelper;
@@ -109,7 +109,7 @@ public abstract class ITCatalogIngestAndQueryTest
   {
     String queryFile = "/catalog/implicitCast_select.sql";
     String tableName = "testImplicitCast" + operationName;
-    TableMetadata table = TableBuilder.datasource(tableName, "P1D")
+    TableMetadata table = TableBuilder.datasource(tableName, "DAY")
         .column(Columns.TIME_COLUMN, Columns.LONG)
         .column("double_col1", "DOUBLE")
         .build();
@@ -179,7 +179,7 @@ public abstract class ITCatalogIngestAndQueryTest
   {
     String queryFile = "/catalog/clustering_select.sql";
     String tableName = "testWithClusteringFromCatalog" + operationName;
-    TableMetadata table = TableBuilder.datasource(tableName, "P1D")
+    TableMetadata table = TableBuilder.datasource(tableName, "ALL")
         .column(Columns.TIME_COLUMN, Columns.LONG)
         .column("bigint_col1", "BIGINT")
         .property(

@@ -19,24 +19,37 @@
 
 package org.apache.druid.client.coordinator;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.InjectableValues;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Injector;
+import org.apache.druid.client.BootstrapSegmentsResponse;
 import org.apache.druid.client.ImmutableSegmentLoadInfo;
+import org.apache.druid.guice.StartupInjectorBuilder;
+import org.apache.druid.initialization.CoreInjectorBuilder;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.query.lookup.LookupExtractorFactory;
+import org.apache.druid.query.lookup.LookupExtractorFactoryContainer;
+import org.apache.druid.query.lookup.MapLookupExtractorFactory;
 import org.apache.druid.rpc.MockServiceClient;
 import org.apache.druid.rpc.RequestBuilder;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.metadata.DataSourceInformation;
+import org.apache.druid.server.compaction.CompactionStatusResponse;
 import org.apache.druid.server.coordination.DruidServerMetadata;
 import org.apache.druid.server.coordination.ServerType;
+import org.apache.druid.server.coordinator.AutoCompactionSnapshot;
+import org.apache.druid.server.coordinator.CoordinatorDynamicConfig;
 import org.apache.druid.timeline.DataSegment;
+import org.apache.druid.timeline.PruneLoadSpec;
 import org.apache.druid.timeline.partition.NumberedShardSpec;
 import org.jboss.netty.handler.codec.http.HttpMethod;
 import org.jboss.netty.handler.codec.http.HttpResponseStatus;
@@ -50,13 +63,33 @@ import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 
 public class CoordinatorClientImplTest
 {
   private ObjectMapper jsonMapper;
   private MockServiceClient serviceClient;
   private CoordinatorClient coordinatorClient;
+
+  private static final DataSegment SEGMENT1 = DataSegment.builder()
+                                                         .dataSource("xyz")
+                                                         .interval(Intervals.of("1000/2000"))
+                                                         .version("1")
+                                                         .loadSpec(ImmutableMap.of("type", "local", "loc", "foo"))
+                                                         .shardSpec(new NumberedShardSpec(0, 1))
+                                                         .size(1)
+                                                         .build();
+
+  private static final DataSegment SEGMENT2 = DataSegment.builder()
+                                                         .dataSource("xyz")
+                                                         .interval(Intervals.of("2000/3000"))
+                                                         .version("1")
+                                                         .loadSpec(ImmutableMap.of("type", "local", "loc", "bar"))
+                                                         .shardSpec(new NumberedShardSpec(0, 1))
+                                                         .size(1)
+                                                         .build();
 
   @Before
   public void setup()
@@ -65,7 +98,10 @@ public class CoordinatorClientImplTest
     jsonMapper.setInjectableValues(
         new InjectableValues.Std(ImmutableMap.of(
             DataSegment.PruneSpecsHolder.class.getName(),
-            DataSegment.PruneSpecsHolder.DEFAULT)));
+            DataSegment.PruneSpecsHolder.DEFAULT
+        ))
+    );
+    jsonMapper.registerSubtypes(MapLookupExtractorFactory.class);
     serviceClient = new MockServiceClient();
     coordinatorClient = new CoordinatorClientImpl(serviceClient, jsonMapper);
   }
@@ -114,7 +150,10 @@ public class CoordinatorClientImplTest
                    .build();
 
     serviceClient.expectAndRespond(
-        new RequestBuilder(HttpMethod.GET, "/druid/coordinator/v1/metadata/datasources/xyz/segments/def?includeUnused=false"),
+        new RequestBuilder(
+            HttpMethod.GET,
+            "/druid/coordinator/v1/metadata/datasources/xyz/segments/def?includeUnused=false"
+        ),
         HttpResponseStatus.OK,
         ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
         jsonMapper.writeValueAsBytes(segment)
@@ -182,6 +221,82 @@ public class CoordinatorClientImplTest
   }
 
   @Test
+  public void test_fetchBootstrapSegments() throws Exception
+  {
+    final List<DataSegment> expectedSegments = ImmutableList.of(SEGMENT1, SEGMENT2);
+
+    serviceClient.expectAndRespond(
+        new RequestBuilder(HttpMethod.POST, "/druid/coordinator/v1/metadata/bootstrapSegments"),
+        HttpResponseStatus.OK,
+        ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
+        jsonMapper.writeValueAsBytes(expectedSegments)
+    );
+
+    final ListenableFuture<BootstrapSegmentsResponse> response = coordinatorClient.fetchBootstrapSegments();
+    Assert.assertNotNull(response);
+
+    final ImmutableList<DataSegment> observedDataSegments = ImmutableList.copyOf(response.get().getIterator());
+    for (int idx = 0; idx < expectedSegments.size(); idx++) {
+      Assert.assertEquals(expectedSegments.get(idx).getLoadSpec(), observedDataSegments.get(idx).getLoadSpec());
+    }
+  }
+
+  /**
+   * Set up a Guice injector with PruneLoadSpec set to true. This test verifies that the bootstrap segments API
+   * always return segments with load specs present, ensuring they can be loaded anywhere.
+   */
+  @Test
+  public void test_fetchBootstrapSegmentsAreLoadableWhenPruneLoadSpecIsEnabled() throws Exception
+  {
+    final List<DataSegment> expectedSegments = ImmutableList.of(SEGMENT1, SEGMENT2);
+
+    // Set up a coordinator client with PruneLoadSpec set to true in the injector
+    final Injector injector = new CoreInjectorBuilder(new StartupInjectorBuilder().build())
+        .addModule(binder -> binder.bindConstant().annotatedWith(PruneLoadSpec.class).to(true))
+        .build();
+
+    final ObjectMapper objectMapper = injector.getInstance(ObjectMapper.class);
+    final CoordinatorClient coordinatorClient = new CoordinatorClientImpl(serviceClient, objectMapper);
+
+    serviceClient.expectAndRespond(
+        new RequestBuilder(HttpMethod.POST, "/druid/coordinator/v1/metadata/bootstrapSegments"),
+        HttpResponseStatus.OK,
+        ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
+        objectMapper.writeValueAsBytes(expectedSegments)
+    );
+
+    final ListenableFuture<BootstrapSegmentsResponse> response = coordinatorClient.fetchBootstrapSegments();
+    Assert.assertNotNull(response);
+
+    final ImmutableList<DataSegment> observedDataSegments = ImmutableList.copyOf(response.get().getIterator());
+    Assert.assertEquals(expectedSegments, observedDataSegments);
+    for (int idx = 0; idx < expectedSegments.size(); idx++) {
+      Assert.assertEquals(expectedSegments.get(idx).getLoadSpec(), observedDataSegments.get(idx).getLoadSpec());
+    }
+  }
+
+  @Test
+  public void test_fetchEmptyBootstrapSegments() throws Exception
+  {
+    final List<DataSegment> segments = ImmutableList.of();
+
+    serviceClient.expectAndRespond(
+        new RequestBuilder(HttpMethod.POST, "/druid/coordinator/v1/metadata/bootstrapSegments"),
+        HttpResponseStatus.OK,
+        ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
+        jsonMapper.writeValueAsBytes(segments)
+    );
+
+    final ListenableFuture<BootstrapSegmentsResponse> response = coordinatorClient.fetchBootstrapSegments();
+    Assert.assertNotNull(response);
+
+    Assert.assertEquals(
+        segments,
+        ImmutableList.copyOf(response.get().getIterator())
+    );
+  }
+
+  @Test
   public void test_fetchDataSourceInformation() throws Exception
   {
     String foo = "foo";
@@ -239,10 +354,13 @@ public class CoordinatorClientImplTest
                    .size(1)
                    .build(),
         serverMetadataSet
-        );
+    );
 
     serviceClient.expectAndRespond(
-        new RequestBuilder(HttpMethod.GET, "/druid/coordinator/v1/datasources/xyz/intervals/2001-01-01T00:00:00.000Z_2002-01-01T00:00:00.000Z/serverview?full"),
+        new RequestBuilder(
+            HttpMethod.GET,
+            "/druid/coordinator/v1/datasources/xyz/intervals/2001-01-01T00:00:00.000Z_2002-01-01T00:00:00.000Z/serverview?full"
+        ),
         HttpResponseStatus.OK,
         ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
         jsonMapper.writeValueAsBytes(Collections.singletonList(immutableSegmentLoadInfo1))
@@ -260,7 +378,10 @@ public class CoordinatorClientImplTest
     );
 
     serviceClient.expectAndRespond(
-        new RequestBuilder(HttpMethod.GET, "/druid/coordinator/v1/datasources/xyz/intervals/2501-01-01T00:00:00.000Z_2502-01-01T00:00:00.000Z/serverview?full"),
+        new RequestBuilder(
+            HttpMethod.GET,
+            "/druid/coordinator/v1/datasources/xyz/intervals/2501-01-01T00:00:00.000Z_2502-01-01T00:00:00.000Z/serverview?full"
+        ),
         HttpResponseStatus.OK,
         ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
         jsonMapper.writeValueAsBytes(Collections.singletonList(immutableSegmentLoadInfo2))
@@ -272,6 +393,142 @@ public class CoordinatorClientImplTest
     Assert.assertEquals(
         segmentLoadInfoList,
         coordinatorClient.fetchServerViewSegments("xyz", intervals)
+    );
+  }
+
+  @Test
+  public void test_getCompactionSnapshots_nullDataSource()
+      throws JsonProcessingException, ExecutionException, InterruptedException
+  {
+    final List<AutoCompactionSnapshot> compactionSnapshots = List.of(
+        AutoCompactionSnapshot.builder("ds1")
+                              .withStatus(AutoCompactionSnapshot.ScheduleStatus.RUNNING)
+                              .build(),
+        AutoCompactionSnapshot.builder("ds2")
+                              .withStatus(AutoCompactionSnapshot.ScheduleStatus.NOT_ENABLED)
+                              .build()
+    );
+    serviceClient.expectAndRespond(
+        new RequestBuilder(HttpMethod.GET, "/druid/coordinator/v1/compaction/status"),
+        HttpResponseStatus.OK,
+        Map.of(),
+        DefaultObjectMapper.INSTANCE.writeValueAsBytes(new CompactionStatusResponse(compactionSnapshots))
+    );
+
+    Assert.assertEquals(
+        new CompactionStatusResponse(compactionSnapshots),
+        coordinatorClient.getCompactionSnapshots(null).get()
+    );
+  }
+
+  @Test
+  public void test_getCompactionSnapshots_nonNullDataSource() throws Exception
+  {
+    final List<AutoCompactionSnapshot> compactionSnapshots = List.of(
+        AutoCompactionSnapshot.builder("ds1").build()
+    );
+    serviceClient.expectAndRespond(
+        new RequestBuilder(HttpMethod.GET, "/druid/coordinator/v1/compaction/status?dataSource=ds1"),
+        HttpResponseStatus.OK,
+        Map.of(),
+        DefaultObjectMapper.INSTANCE.writeValueAsBytes(new CompactionStatusResponse(compactionSnapshots))
+    );
+
+    Assert.assertEquals(
+        new CompactionStatusResponse(compactionSnapshots),
+        coordinatorClient.getCompactionSnapshots("ds1").get()
+    );
+  }
+
+  @Test
+  public void test_getCoordinatorDynamicConfig() throws Exception
+  {
+    CoordinatorDynamicConfig config = CoordinatorDynamicConfig
+        .builder()
+        .withMaxSegmentsToMove(105)
+        .withReplicantLifetime(500)
+        .withReplicationThrottleLimit(5)
+        .build();
+
+    serviceClient.expectAndRespond(
+        new RequestBuilder(
+            HttpMethod.GET,
+            "/druid/coordinator/v1/config"
+        ),
+        HttpResponseStatus.OK,
+        ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
+        DefaultObjectMapper.INSTANCE.writeValueAsBytes(config)
+    );
+
+    Assert.assertEquals(
+        config,
+        coordinatorClient.getCoordinatorDynamicConfig().get()
+    );
+  }
+
+  @Test
+  public void test_updateCoordinatorDynamicConfig() throws Exception
+  {
+    final CoordinatorDynamicConfig config = CoordinatorDynamicConfig
+        .builder()
+        .withMaxSegmentsToMove(105)
+        .withReplicantLifetime(500)
+        .withReplicationThrottleLimit(5)
+        .build();
+
+    serviceClient.expectAndRespond(
+        new RequestBuilder(HttpMethod.POST, "/druid/coordinator/v1/config")
+            .jsonContent(jsonMapper, config),
+        HttpResponseStatus.OK,
+        ImmutableMap.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
+        DefaultObjectMapper.INSTANCE.writeValueAsBytes(null)
+    );
+
+    Assert.assertNull(coordinatorClient.updateCoordinatorDynamicConfig(config).get());
+  }
+
+  @Test
+  public void test_updateAllLookups_withEmptyLookup() throws Exception
+  {
+    serviceClient.expectAndRespond(
+        new RequestBuilder(HttpMethod.POST, "/druid/coordinator/v1/lookups/config")
+            .jsonContent(jsonMapper, Map.of()),
+        HttpResponseStatus.OK,
+        Map.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
+        DefaultObjectMapper.INSTANCE.writeValueAsBytes(null)
+    );
+
+    Assert.assertNull(coordinatorClient.updateAllLookups(Map.of()).get());
+  }
+
+  @Test
+  public void test_fetchLookupsForTierSync_detailedEnabled() throws Exception
+  {
+    LookupExtractorFactory lookupData = new MapLookupExtractorFactory(
+        Map.of(
+            "77483", "United States",
+            "77484", "India"
+        ),
+        true
+    );
+    LookupExtractorFactoryContainer lookupDataContainer = new LookupExtractorFactoryContainer("v0", lookupData);
+    Map<String, LookupExtractorFactoryContainer> lookups = Map.of(
+        "default_tier", lookupDataContainer
+    );
+
+    serviceClient.expectAndRespond(
+        new RequestBuilder(
+            HttpMethod.GET,
+            "/druid/coordinator/v1/lookups/config/default_tier?detailed=true"
+        ),
+        HttpResponseStatus.OK,
+        Map.of(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON),
+        DefaultObjectMapper.INSTANCE.writeValueAsBytes(lookups)
+    );
+
+    Assert.assertEquals(
+        lookups,
+        coordinatorClient.fetchLookupsForTierSync("default_tier")
     );
   }
 }

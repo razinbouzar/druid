@@ -34,7 +34,7 @@ For specific query differences between arrays and MVDs, see [Querying arrays and
 
 |  | Array| MVD |
 |---|---|---|
-| Data types | Supports VARCHAR, BIGINT, and DOUBLE types (ARRAY<STRING\>, ARRAY<LONG\>, ARRAY<DOUBLE\>) | Only supports arrays of strings (VARCHAR) |
+| Data types | Supports VARCHAR, BIGINT, and DOUBLE types (ARRAY\<STRING\>, ARRAY\<LONG\>, ARRAY\<DOUBLE\>) | Only supports arrays of strings (VARCHAR) |
 | SQL compliance | Behaves like standard SQL arrays with SQL-compliant behavior | Behaves like SQL VARCHAR rather than standard SQL arrays and requires special SQL functions to achieve array-like behavior. See the [examples](#examples). |
 | Ingestion | <ul><li>JSON arrays are ingested as Druid arrays</li><li>Managed through the query context parameter `arrayIngestMode` in SQL-based ingestion. Supported options are `array`, `mvd`, and `none`. Note that if you set this mode to `none`, Druid raises an exception if you try to store any type of array.</li></ul> | <ul><li>JSON arrays are ingested as MVDs</li><li>Managed using functions like [ARRAY_TO_MV](../querying/sql-functions.md#array_to_mv) in SQL-based ingestion</li></ul> |
 | Filtering and grouping | <ul><li>Filters and groupings match the entire array value</li><li>Can be used as GROUP BY keys, grouping based on the entire array value</li><li>Use the [UNNEST operator](#group-by-array-elements) to group based on individual array elements</li></ul> | <ul><li>Filters match any value within the array</li><li>Grouping generates a group for each individual value, similar to an implicit UNNEST</li></ul> |
@@ -231,7 +231,11 @@ GROUP BY 1, 2
 ```
 
 
-## How to ingest data as arrays
+## How to ingest arrays
+
+:::tip
+As a best practice, store data as arrays rather than MVDs.
+:::
 
 You can ingest arrays in Druid as follows:
 
@@ -242,5 +246,15 @@ For an example, see [Ingesting arrays: Native batch and streaming ingestion](../
 * For SQL-based batch ingestion, include the [query context parameter](../multi-stage-query/reference.md#context-parameters) `"arrayIngestMode": "array"` and reference the relevant array type (`VARCHAR ARRAY`, `BIGINT ARRAY`, or `DOUBLE ARRAY`) in the [EXTEND clause](../multi-stage-query/reference.md#extern-function) that lists the column names and data types.
 For examples, see [Ingesting arrays: SQL-based ingestion](../querying/arrays.md#sql-based-ingestion).
 
-   As a best practice, always use the ARRAY data type in your input schema. If you want to ingest MVDs, explicitly wrap the string array in [ARRAY_TO_MV](../querying/sql-functions.md#array_to_mv). For an example, see [Multi-value dimensions: SQL-based ingestion](/querying/multi-value-dimensions.md#sql-based-ingestion).
+## How to ingest MVDs
 
+You can't mix arrays and MVDs in the same column.
+If you need to continue to use MVDs, use the [ARRAY_TO_MV](../querying/sql-functions.md#array_to_mv) function when you ingest data.
+This ensures that VARCHAR ARRAYS are stored as MVDs rather than arrays of strings.
+To continue using MVDs in your existing queries, you need to ingest MVDs explicitly since arrays and MVDs behave differently.
+
+For an example using ARRAY_TO_MV, see [Multi-value dimensions: SQL-based ingestion](../querying/multi-value-dimensions.md#sql-based-ingestion).
+
+If you have MVD columns and want to migrate to array columns, [reindex](../data-management/update.md#reindex) your data to update its schema.
+Reindexing overwrites existing data where the source of new data is the existing data itself.
+Follow the same guidance on [How to ingest arrays](#how-to-ingest-arrays).

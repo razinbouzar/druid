@@ -42,15 +42,16 @@ import org.apache.druid.msq.indexing.error.BroadcastTablesTooLargeFault;
 import org.apache.druid.msq.indexing.error.MSQException;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.InlineDataSource;
+import org.apache.druid.query.JoinAlgorithm;
 import org.apache.druid.query.JoinDataSource;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryContext;
-import org.apache.druid.segment.QueryableIndexStorageAdapter;
-import org.apache.druid.segment.StorageAdapter;
+import org.apache.druid.query.policy.NoopPolicyEnforcer;
+import org.apache.druid.segment.CursorFactory;
+import org.apache.druid.segment.QueryableIndexCursorFactory;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.join.JoinConditionAnalysis;
 import org.apache.druid.segment.join.JoinType;
-import org.apache.druid.sql.calcite.planner.JoinAlgorithm;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.easymock.EasyMock;
@@ -74,7 +75,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
   @Rule
   public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
-  private StorageAdapter adapter;
+  private CursorFactory cursorFactory;
   private File testDataFile1;
   private File testDataFile2;
   private FrameReader frameReader1;
@@ -84,12 +85,12 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
   public void setUp() throws IOException
   {
     final ArenaMemoryAllocator allocator = ArenaMemoryAllocator.createOnHeap(10_000);
-    adapter = new QueryableIndexStorageAdapter(TestIndex.getNoRollupMMappedTestIndex());
+    cursorFactory = new QueryableIndexCursorFactory(TestIndex.getNoRollupMMappedTestIndex());
 
     // File 1: the entire test dataset.
     testDataFile1 = FrameTestUtil.writeFrameFile(
-        FrameSequenceBuilder.fromAdapter(adapter)
-                            .frameType(FrameType.ROW_BASED) // No particular reason to test with both frame types
+        FrameSequenceBuilder.fromCursorFactory(cursorFactory)
+                            .frameType(FrameType.latestRowBased())
                             .allocator(allocator)
                             .frames(),
         temporaryFolder.newFile()
@@ -97,8 +98,8 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
 
     // File 2: just two rows.
     testDataFile2 = FrameTestUtil.writeFrameFile(
-        FrameSequenceBuilder.fromAdapter(adapter)
-                            .frameType(FrameType.ROW_BASED) // No particular reason to test with both frame types
+        FrameSequenceBuilder.fromCursorFactory(cursorFactory)
+                            .frameType(FrameType.latestRowBased())
                             .allocator(allocator)
                             .maxRowsPerFrame(1)
                             .frames()
@@ -106,8 +107,8 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
         temporaryFolder.newFile()
     );
 
-    frameReader1 = FrameReader.create(adapter.getRowSignature());
-    frameReader2 = FrameReader.create(adapter.getRowSignature());
+    frameReader1 = FrameReader.create(cursorFactory.getRowSignature());
+    frameReader2 = FrameReader.create(cursorFactory.getRowSignature());
   }
 
   @Test
@@ -129,6 +130,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
 
     final BroadcastJoinSegmentMapFnProcessor broadcastJoinReader = new BroadcastJoinSegmentMapFnProcessor(
         null /* Query; not used for the methods we're testing */,
+        NoopPolicyEnforcer.instance(),
         sideStageChannelNumberMap,
         channels,
         channelReaders,
@@ -169,7 +171,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
     Assert.assertEquals(1209, rowsFromStage3.size());
 
     FrameTestUtil.assertRowsEqual(
-        FrameTestUtil.readRowsFromAdapter(adapter, null, false),
+        FrameTestUtil.readRowsFromCursorFactory(cursorFactory),
         Sequences.simple(rowsFromStage3.stream().map(Arrays::asList).collect(Collectors.toList()))
     );
 
@@ -178,7 +180,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
     Assert.assertEquals(2, rowsFromStage4.size());
 
     FrameTestUtil.assertRowsEqual(
-        FrameTestUtil.readRowsFromAdapter(adapter, null, false).limit(2),
+        FrameTestUtil.readRowsFromCursorFactory(cursorFactory).limit(2),
         Sequences.simple(rowsFromStage4.stream().map(Arrays::asList).collect(Collectors.toList()))
     );
 
@@ -189,6 +191,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
             "j.",
             JoinConditionAnalysis.forExpression("x == \"j.x\"", "j.", ExprMacroTable.nil()),
             JoinType.INNER,
+            null,
             null,
             null
         )
@@ -219,6 +222,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
 
     final BroadcastJoinSegmentMapFnProcessor broadcastJoinHelper = new BroadcastJoinSegmentMapFnProcessor(
         null /* Query; not used for the methods we're testing */,
+        NoopPolicyEnforcer.instance(),
         sideStageChannelNumberMap,
         channels,
         channelReaders,
@@ -270,6 +274,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
     EasyMock.replay(mockQuery);
     final BroadcastJoinSegmentMapFnProcessor broadcastJoinHelper = new BroadcastJoinSegmentMapFnProcessor(
         mockQuery,
+        NoopPolicyEnforcer.instance(),
         sideStageChannelNumberMap,
         channels,
         channelReaders,

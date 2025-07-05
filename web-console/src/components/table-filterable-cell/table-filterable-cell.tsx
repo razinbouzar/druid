@@ -16,19 +16,18 @@
  * limitations under the License.
  */
 
-import { Menu, MenuDivider, MenuItem } from '@blueprintjs/core';
-import { Popover2 } from '@blueprintjs/popover2';
+import { Menu, MenuDivider, MenuItem, Popover } from '@blueprintjs/core';
 import type { ReactNode } from 'react';
 import React from 'react';
 import type { Filter } from 'react-table';
 
 import type { FilterMode } from '../../react-table';
-import { addFilter, filterModeToIcon } from '../../react-table';
+import { addOrUpdateFilter, combineModeAndNeedle, filterModeToIcon } from '../../react-table';
 import { Deferred } from '../deferred/deferred';
 
 import './table-filterable-cell.scss';
 
-const FILTER_MODES: FilterMode[] = ['=', '!=', '<=', '>='];
+const FILTER_MODES: FilterMode[] = ['=', '!=', '<', '>='];
 const FILTER_MODES_NO_COMPARISONS: FilterMode[] = ['=', '!='];
 
 export interface TableFilterableCellProps {
@@ -46,7 +45,7 @@ export const TableFilterableCell = React.memo(function TableFilterableCell(
   const { field, value, children, filters, enableComparisons, onFiltersChange } = props;
 
   return (
-    <Popover2
+    <Popover
       className="table-filterable-cell"
       content={
         <Deferred
@@ -58,7 +57,14 @@ export const TableFilterableCell = React.memo(function TableFilterableCell(
                   key={i}
                   icon={filterModeToIcon(mode)}
                   text={value}
-                  onClick={() => onFiltersChange(addFilter(filters, field, mode, value))}
+                  onClick={() =>
+                    onFiltersChange(
+                      addOrUpdateFilter(filters, {
+                        id: field,
+                        value: combineModeAndNeedle(mode, value),
+                      }),
+                    )
+                  }
                 />
               ))}
             </Menu>
@@ -66,7 +72,7 @@ export const TableFilterableCell = React.memo(function TableFilterableCell(
         />
       }
     >
-      {children}
-    </Popover2>
+      {children ?? value}
+    </Popover>
   );
 });

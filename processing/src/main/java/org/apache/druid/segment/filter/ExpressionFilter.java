@@ -22,7 +22,6 @@ package org.apache.druid.segment.filter;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.Iterables;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.java.util.common.UOE;
 import org.apache.druid.math.expr.Evals;
 import org.apache.druid.math.expr.Expr;
@@ -121,18 +120,18 @@ public class ExpressionFilter implements Filter
       case STRING:
         return VectorValueMatcherColumnProcessorFactory.instance().makeObjectProcessor(
             ColumnCapabilitiesImpl.createSimpleSingleValueStringColumnCapabilities(),
-            ExpressionVectorSelectors.makeVectorObjectSelector(factory, theExpr)
+            ExpressionVectorSelectors.makeVectorObjectSelector(factory, theExpr, null)
         ).makeMatcher(predicateFactory);
       case ARRAY:
         return VectorValueMatcherColumnProcessorFactory.instance().makeObjectProcessor(
             ColumnCapabilitiesImpl.createDefault().setType(ExpressionType.toColumnType(outputType)).setHasNulls(true),
-            ExpressionVectorSelectors.makeVectorObjectSelector(factory, theExpr)
+            ExpressionVectorSelectors.makeVectorObjectSelector(factory, theExpr, null)
         ).makeMatcher(predicateFactory);
       default:
         if (ExpressionType.NESTED_DATA.equals(outputType)) {
           return VectorValueMatcherColumnProcessorFactory.instance().makeObjectProcessor(
               ColumnCapabilitiesImpl.createDefault().setType(ExpressionType.toColumnType(outputType)).setHasNulls(true),
-              ExpressionVectorSelectors.makeVectorObjectSelector(factory, theExpr)
+              ExpressionVectorSelectors.makeVectorObjectSelector(factory, theExpr, null)
           ).makeMatcher(predicateFactory);
         }
         throw new UOE("Vectorized expression matchers not implemented for type: [%s]", outputType);
@@ -155,39 +154,31 @@ public class ExpressionFilter implements Filter
         }
 
         if (eval.type().isArray()) {
+          final Object[] result = eval.asArray();
+          if (result == null) {
+            // if value was null and includeUnknown was true we would have already returned before getting here so
+            // is safe to return false
+            return false;
+          }
           switch (eval.elementType().getType()) {
             case LONG:
-              final Object[] lResult = eval.asArray();
-              if (lResult == null) {
-                return false;
-              }
               if (includeUnknown) {
-                return Arrays.stream(lResult).anyMatch(o -> o == null || Evals.asBoolean((long) o));
+                return Arrays.stream(result).anyMatch(o -> o == null || Evals.asBoolean((long) o));
               }
 
-              return Arrays.stream(lResult).filter(Objects::nonNull).anyMatch(o -> Evals.asBoolean((long) o));
+              return Arrays.stream(result).filter(Objects::nonNull).anyMatch(o -> Evals.asBoolean((long) o));
             case STRING:
-              final Object[] sResult = eval.asArray();
-              if (sResult == null) {
-                return false;
-              }
-
               if (includeUnknown) {
-                return Arrays.stream(sResult).anyMatch(o -> o == null || Evals.asBoolean((String) o));
+                return Arrays.stream(result).anyMatch(o -> o == null || Evals.asBoolean((String) o));
               }
 
-              return Arrays.stream(sResult).anyMatch(o -> Evals.asBoolean((String) o));
+              return Arrays.stream(result).anyMatch(o -> Evals.asBoolean((String) o));
             case DOUBLE:
-              final Object[] dResult = eval.asArray();
-              if (dResult == null) {
-                return false;
-              }
-
               if (includeUnknown) {
-                return Arrays.stream(dResult).anyMatch(o -> o == null || Evals.asBoolean((double) o));
+                return Arrays.stream(result).anyMatch(o -> o == null || Evals.asBoolean((double) o));
               }
 
-              return Arrays.stream(dResult).filter(Objects::nonNull).anyMatch(o -> Evals.asBoolean((double) o));
+              return Arrays.stream(result).filter(Objects::nonNull).anyMatch(o -> Evals.asBoolean((double) o));
           }
         }
         return eval.asBoolean();
@@ -364,7 +355,7 @@ public class ExpressionFilter implements Filter
           final ExprEval<?> eval = expr.get().eval(
               InputBindings.forInputSupplier(
                   ExpressionType.STRING,
-                  () -> NullHandling.nullToEmptyIfNeeded(value)
+                  () -> value
               )
           );
           if (eval.value() == null) {

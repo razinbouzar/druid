@@ -21,14 +21,10 @@
 // Originally licensed under the MIT license (https://github.com/thlorenz/brace/blob/master/LICENSE)
 // This file was modified to make the list of keywords more closely adhere to what is found in DruidSQL
 
-import type { Ace } from 'ace-builds';
 import ace from 'ace-builds/src-noconflict/ace';
 
-import * as druidKeywords from '../../lib/keywords';
-import * as druidFunctions from '../../lib/sql-docs';
-
-import type { ItemDescription } from './make-doc-html';
-import { makeDocHtml } from './make-doc-html';
+import { SQL_CONSTANTS, SQL_DYNAMICS, SQL_KEYWORDS } from '../../lib/keywords';
+import { SQL_DATA_TYPES, SQL_FUNCTIONS } from '../../lib/sql-docs';
 
 ace.define(
   'ace/mode/dsql_highlight_rules',
@@ -41,20 +37,16 @@ ace.define(
 
     const SqlHighlightRules = function (this: any) {
       // Stuff like: 'with|select|from|where|and|or|group|by|order|limit|having|as|case|'
-      const keywords = druidKeywords.SQL_KEYWORDS.concat(druidKeywords.SQL_EXPRESSION_PARTS)
-        .join('|')
-        .replace(/\s/g, '|');
+      const keywords = SQL_KEYWORDS.join('|').replace(/\s/g, '|');
 
       // Stuff like: 'true|false'
-      const builtinConstants = druidKeywords.SQL_CONSTANTS.join('|');
+      const builtinConstants = SQL_CONSTANTS.join('|');
 
       // Stuff like: 'avg|count|first|last|max|min'
-      const builtinFunctions = druidKeywords.SQL_DYNAMICS.concat(
-        Object.keys(druidFunctions.SQL_FUNCTIONS),
-      ).join('|');
+      const builtinFunctions = SQL_DYNAMICS.concat(Object.keys(SQL_FUNCTIONS)).join('|');
 
       // Stuff like: 'int|numeric|decimal|date|varchar|char|bigint|float|double|bit|binary|text|set|timestamp'
-      const dataTypes = Object.keys(druidFunctions.SQL_DATA_TYPES).join('|');
+      const dataTypes = Object.keys(SQL_DATA_TYPES).join('|');
 
       const keywordMapper = this.createKeywordMapper(
         {
@@ -135,58 +127,15 @@ ace.define(
     const TextMode = acequire('./text').Mode;
     const SqlHighlightRules = acequire('./dsql_highlight_rules').SqlHighlightRules;
 
-    const completions = ([] as Ace.Completion[]).concat(
-      druidKeywords.SQL_KEYWORDS.map(v => ({ name: v, value: v, score: 0, meta: 'keyword' })),
-      druidKeywords.SQL_EXPRESSION_PARTS.map(v => ({
-        name: v,
-        value: v,
-        score: 0,
-        meta: 'keyword',
-      })),
-      druidKeywords.SQL_CONSTANTS.map(v => ({ name: v, value: v, score: 0, meta: 'constant' })),
-      druidKeywords.SQL_DYNAMICS.map(v => ({ name: v, value: v, score: 0, meta: 'dynamic' })),
-      Object.entries(druidFunctions.SQL_DATA_TYPES).map(([name, [runtime, description]]) => {
-        const item: ItemDescription = {
-          name,
-          description,
-          syntax: `Druid runtime type: ${runtime}`,
-        };
-        return {
-          name,
-          value: name,
-          score: 0,
-          meta: 'type',
-          docHTML: makeDocHtml(item),
-          docText: description,
-        };
-      }),
-      Object.entries(druidFunctions.SQL_FUNCTIONS).flatMap(([name, versions]) => {
-        return versions.map(([args, description]) => {
-          const item = { name, description, syntax: `${name}(${args})` };
-          return {
-            name,
-            value: versions.length > 1 ? `${name}(${args})` : name,
-            score: 1100, // Use a high score to appear over the 'local' suggestions that have a score of 1000
-            meta: 'function',
-            docHTML: makeDocHtml(item),
-            docText: description,
-            completer: {
-              insertMatch: (editor: any, data: any) => {
-                editor.completer.insertMatch({ value: data.name });
-              },
-            },
-          } as Ace.Completion;
-        });
-      }),
-    );
-
     const Mode = function (this: any) {
       this.HighlightRules = SqlHighlightRules;
       this.$behaviour = this.$defaultBehaviour;
       this.$id = 'ace/mode/dsql';
 
       this.lineCommentStart = '--';
-      this.getCompletions = () => completions;
+      this.getCompletions = () => {
+        return [];
+      };
     };
     oop.inherits(Mode, TextMode);
 

@@ -31,10 +31,10 @@ import org.apache.druid.frame.key.KeyOrder;
 import org.apache.druid.frame.testutil.FrameSequenceBuilder;
 import org.apache.druid.java.util.common.ByteBufferUtils;
 import org.apache.druid.java.util.common.io.Closer;
-import org.apache.druid.segment.QueryableIndexStorageAdapter;
-import org.apache.druid.segment.StorageAdapter;
+import org.apache.druid.segment.CursorFactory;
+import org.apache.druid.segment.QueryableIndexCursorFactory;
 import org.apache.druid.segment.TestIndex;
-import org.apache.druid.segment.incremental.IncrementalIndexStorageAdapter;
+import org.apache.druid.segment.incremental.IncrementalIndexCursorFactory;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.MatcherAssert;
@@ -74,7 +74,7 @@ public class FrameTest
     @Before
     public void setUp()
     {
-      final StorageAdapter adapter = new QueryableIndexStorageAdapter(TestIndex.getNoRollupMMappedTestIndex());
+      final CursorFactory cursorFactory = new QueryableIndexCursorFactory(TestIndex.getNoRollupMMappedTestIndex());
 
       final List<KeyColumn> sortBy = ImmutableList.of(
           new KeyColumn("quality", KeyOrder.DESCENDING),
@@ -83,16 +83,16 @@ public class FrameTest
 
       columnarFrame = Iterables.getOnlyElement(
           FrameSequenceBuilder
-              .fromAdapter(adapter)
-              .frameType(FrameType.COLUMNAR)
+              .fromCursorFactory(cursorFactory)
+              .frameType(FrameType.latestColumnar())
               .frames()
               .toList()
       );
 
       rowBasedSortedFrame = Iterables.getOnlyElement(
           FrameSequenceBuilder
-              .fromAdapter(adapter)
-              .frameType(FrameType.ROW_BASED)
+              .fromCursorFactory(cursorFactory)
+              .frameType(FrameType.latestRowBased())
               .sortBy(sortBy)
               .frames()
               .toList()
@@ -318,10 +318,10 @@ public class FrameTest
     @BeforeClass
     public static void setUpClass() throws Exception
     {
-      final StorageAdapter adapter = new IncrementalIndexStorageAdapter(TestIndex.getIncrementalTestIndex());
+      final CursorFactory cursorFactory = new IncrementalIndexCursorFactory(TestIndex.getIncrementalTestIndex());
       final Frame frame =
-          Iterables.getOnlyElement(FrameSequenceBuilder.fromAdapter(adapter)
-                                                       .frameType(FrameType.COLUMNAR)
+          Iterables.getOnlyElement(FrameSequenceBuilder.fromCursorFactory(cursorFactory)
+                                                       .frameType(FrameType.latestColumnar())
                                                        .frames()
                                                        .toList());
       FRAME_DATA = frameToByteArray(frame, false);
@@ -401,9 +401,9 @@ public class FrameTest
 
     private static Frame makeGoodFrame()
     {
-      final StorageAdapter adapter = new IncrementalIndexStorageAdapter(TestIndex.getIncrementalTestIndex());
-      return Iterables.getOnlyElement(FrameSequenceBuilder.fromAdapter(adapter)
-                                                          .frameType(FrameType.COLUMNAR)
+      final CursorFactory cursorFactory = new IncrementalIndexCursorFactory(TestIndex.getIncrementalTestIndex());
+      return Iterables.getOnlyElement(FrameSequenceBuilder.fromCursorFactory(cursorFactory)
+                                                          .frameType(FrameType.latestColumnar())
                                                           .frames()
                                                           .toList());
     }

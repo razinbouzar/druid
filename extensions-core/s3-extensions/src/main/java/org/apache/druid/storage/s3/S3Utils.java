@@ -70,7 +70,7 @@ public class S3Utils
    */
   public static final String ERROR_ENTITY_TOO_LARGE = "EntityTooLarge";
 
-  public static final Predicate<Throwable> S3RETRY = new Predicate<Throwable>()
+  public static final Predicate<Throwable> S3RETRY = new Predicate<>()
   {
     @Override
     public boolean apply(Throwable e)
@@ -96,6 +96,9 @@ public class S3Utils
         // This can happen sometimes when AWS isn't able to obtain the credentials for some service:
         // https://github.com/aws/aws-sdk-java/issues/2285
         return true;
+      } else if (e instanceof InterruptedException) {
+        Thread.interrupted(); // Clear interrupted state and not retry
+        return false;
       } else if (e instanceof AmazonClientException) {
         return AWSClientUtil.isClientExceptionRecoverable((AmazonClientException) e);
       } else {
@@ -348,7 +351,7 @@ public class S3Utils
       String bucket,
       String key,
       File file
-  )
+  ) throws InterruptedException
   {
     final PutObjectRequest putObjectRequest = new PutObjectRequest(bucket, key, file);
 
@@ -356,7 +359,7 @@ public class S3Utils
       putObjectRequest.setAccessControlList(S3Utils.grantFullControlToBucketOwner(service, bucket));
     }
     log.info("Pushing [%s] to bucket[%s] and key[%s].", file, bucket, key);
-    service.putObject(putObjectRequest);
+    service.upload(putObjectRequest);
   }
 
   @Nullable
@@ -379,7 +382,7 @@ public class S3Utils
   {
     final Protocol protocolFromClientConfig = parseProtocol(clientConfig.getProtocol());
     final String endpointUrl = endpointConfig.getUrl();
-    if (org.apache.commons.lang.StringUtils.isNotEmpty(endpointUrl)) {
+    if (org.apache.commons.lang3.StringUtils.isNotEmpty(endpointUrl)) {
       //noinspection ConstantConditions
       final URI uri = URIs.parse(endpointUrl, protocolFromClientConfig.toString());
       final Protocol protocol = parseProtocol(uri.getScheme());
@@ -394,16 +397,16 @@ public class S3Utils
 
   public static ClientConfiguration setProxyConfig(ClientConfiguration conf, AWSProxyConfig proxyConfig)
   {
-    if (org.apache.commons.lang.StringUtils.isNotEmpty(proxyConfig.getHost())) {
+    if (org.apache.commons.lang3.StringUtils.isNotEmpty(proxyConfig.getHost())) {
       conf.setProxyHost(proxyConfig.getHost());
     }
     if (proxyConfig.getPort() != -1) {
       conf.setProxyPort(proxyConfig.getPort());
     }
-    if (org.apache.commons.lang.StringUtils.isNotEmpty(proxyConfig.getUsername())) {
+    if (org.apache.commons.lang3.StringUtils.isNotEmpty(proxyConfig.getUsername())) {
       conf.setProxyUsername(proxyConfig.getUsername());
     }
-    if (org.apache.commons.lang.StringUtils.isNotEmpty(proxyConfig.getPassword())) {
+    if (org.apache.commons.lang3.StringUtils.isNotEmpty(proxyConfig.getPassword())) {
       conf.setProxyPassword(proxyConfig.getPassword());
     }
     return conf;

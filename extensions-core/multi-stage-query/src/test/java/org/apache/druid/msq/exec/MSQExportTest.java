@@ -22,12 +22,15 @@ package org.apache.druid.msq.exec;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import org.apache.druid.java.util.common.StringUtils;
+import org.apache.druid.msq.sql.MSQTaskQueryMaker;
 import org.apache.druid.msq.test.MSQTestBase;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
+import org.apache.druid.sql.calcite.util.CalciteTests;
 import org.junit.Assert;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -35,6 +38,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,8 +47,19 @@ import java.util.Objects;
 
 public class MSQExportTest extends MSQTestBase
 {
-  @Test
-  public void testExport() throws IOException
+
+  public static Collection<Object[]> data()
+  {
+    Object[][] data = new Object[][]{
+        {DEFAULT, DEFAULT_MSQ_CONTEXT},
+        {SUPERUSER, SUPERUSER_MSQ_CONTEXT}
+    };
+    return Arrays.asList(data);
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testExport(String unusedContextName, Map<String, Object> context) throws IOException
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -55,15 +71,15 @@ public class MSQExportTest extends MSQTestBase
 
     testIngestQuery().setSql(sql)
                      .setExpectedDataSource("foo1")
-                     .setQueryContext(DEFAULT_MSQ_CONTEXT)
+                     .setQueryContext(context)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of())
+                     .setExpectedSegments(ImmutableSet.of())
                      .setExpectedResultRows(ImmutableList.of())
                      .verifyResults();
 
     Assert.assertEquals(
-         2, // result file and manifest file
-        Objects.requireNonNull(new File(exportDir.getAbsolutePath()).listFiles()).length
+        2, // result file and manifest file
+        Objects.requireNonNull(exportDir.listFiles()).length
     );
 
     File resultFile = new File(exportDir, "query-test-query-worker0-partition0.csv");
@@ -74,27 +90,28 @@ public class MSQExportTest extends MSQTestBase
     );
   }
 
-  @Test
-  public void testExport2() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testExport2(String unusedContextName, Map<String, Object> context) throws IOException
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("dim1", ColumnType.STRING)
                                             .add("cnt", ColumnType.LONG).build();
 
-    File exportDir = newTempFolder("export");
+    final File exportDir = newTempFolder("export");
     final String sql = StringUtils.format("insert into extern(local(exportPath=>'%s')) as csv select dim1 as table_dim, count(*) as table_count from foo where dim1 = 'abc' group by 1", exportDir.getAbsolutePath());
 
     testIngestQuery().setSql(sql)
                      .setExpectedDataSource("foo1")
-                     .setQueryContext(DEFAULT_MSQ_CONTEXT)
+                     .setQueryContext(context)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of())
+                     .setExpectedSegments(ImmutableSet.of())
                      .setExpectedResultRows(ImmutableList.of())
                      .verifyResults();
 
     Assert.assertEquals(
         2,
-        Objects.requireNonNull(new File(exportDir.getAbsolutePath()).listFiles()).length
+        Objects.requireNonNull(exportDir.listFiles()).length
     );
 
 
@@ -108,8 +125,48 @@ public class MSQExportTest extends MSQTestBase
     verifyManifestFile(exportDir, ImmutableList.of(resultFile));
   }
 
-  @Test
-  public void testNumberOfRowsPerFile()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testExportRestricted(String unusedContextName, Map<String, Object> context) throws IOException
+  {
+    // Set expected results based on query's end user
+    boolean isSuperUser = context.get(MSQTaskQueryMaker.USER_KEY).equals(CalciteTests.TEST_SUPERUSER_NAME);
+    List<String> expectedResultRows = isSuperUser
+                                      ? Arrays.asList("m1", "1.0", "2.0", "3.0", "4.0", "5.0", "6.0")
+                                      : Arrays.asList("m1", "6.0");
+    // Set common expected results (not relevant to query's end user)
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("m1", ColumnType.FLOAT)
+                                            .build();
+
+    File exportDir = newTempFolder("export");
+    final String sql = StringUtils.format(
+        "insert into extern(local(exportPath=>'%s')) as csv select m1 from restrictedDatasource_m1_is_6",
+        exportDir.getAbsolutePath()
+    );
+
+    testIngestQuery().setSql(sql)
+                     .setExpectedDataSource("restrictedDatasource_m1_is_6")
+                     .setQueryContext(context)
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(ImmutableSet.of())
+                     .setExpectedResultRows(ImmutableList.of())
+                     .verifyResults();
+
+    Assert.assertEquals(
+        2, // result file and manifest file
+        Objects.requireNonNull(exportDir.listFiles()).length
+    );
+
+    File resultFile = new File(exportDir, "query-test-query-worker0-partition0.csv");
+    List<String> results = readResultsFromFile(resultFile);
+    Assert.assertEquals(expectedResultRows, results);
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testNumberOfRowsPerFile(String unusedContextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -118,7 +175,7 @@ public class MSQExportTest extends MSQTestBase
 
     File exportDir = newTempFolder("export");
 
-    Map<String, Object> queryContext = new HashMap<>(DEFAULT_MSQ_CONTEXT);
+    Map<String, Object> queryContext = new HashMap<>(context);
     queryContext.put(MultiStageQueryContext.CTX_ROWS_PER_PAGE, 1);
 
     final String sql = StringUtils.format("insert into extern(local(exportPath=>'%s')) as csv select cnt, dim1 from foo", exportDir.getAbsolutePath());
@@ -127,13 +184,157 @@ public class MSQExportTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setQueryContext(queryContext)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of())
+                     .setExpectedSegments(ImmutableSet.of())
                      .setExpectedResultRows(ImmutableList.of())
                      .verifyResults();
 
     Assert.assertEquals(
         expectedFooFileContents(false).size() + 1, // + 1 for the manifest file
-        Objects.requireNonNull(new File(exportDir.getAbsolutePath()).listFiles()).length
+        Objects.requireNonNull(exportDir.listFiles()).length
+    );
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testExportComplexColumns(String unusedContextName, Map<String, Object> context) throws IOException
+  {
+    final RowSignature rowSignature = RowSignature.builder()
+                                                  .add("__time", ColumnType.LONG)
+                                                  .add("a", ColumnType.LONG)
+                                                  .add("b", ColumnType.LONG)
+                                                  .add("c_json", ColumnType.STRING).build();
+
+    final File exportDir = newTempFolder("export");
+    final String sql = StringUtils.format("INSERT INTO\n"
+                                          + "EXTERN(local(exportPath=>'%s'))\n"
+                                          + "AS CSV\n"
+                                          + "SELECT\n"
+                                          + "  \"a\",\n"
+                                          + "  \"b\",\n"
+                                          + "  json_object(key 'c' value b) c_json\n"
+                                          + "FROM (\n"
+                                          + "  SELECT *\n"
+                                          + "  FROM TABLE(\n"
+                                          + "    EXTERN(\n"
+                                          + "      '{\"type\":\"inline\",\"data\":\"a,b\\n1,1\\n2,2\"}',\n"
+                                          + "      '{\"type\":\"csv\",\"findColumnsFromHeader\":true}'\n"
+                                          + "    )\n"
+                                          + "  ) EXTEND (\"a\" BIGINT, \"b\" BIGINT)\n"
+                                          + ")", exportDir.getAbsolutePath());
+
+    testIngestQuery().setSql(sql)
+                     .setExpectedDataSource("foo1")
+                     .setQueryContext(context)
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(ImmutableSet.of())
+                     .setExpectedResultRows(ImmutableList.of())
+                     .verifyResults();
+
+    Assert.assertEquals(
+        2, // result file and manifest file
+        Objects.requireNonNull(exportDir.listFiles()).length
+    );
+
+    File resultFile = new File(exportDir, "query-test-query-worker0-partition0.csv");
+    List<String> results = readResultsFromFile(resultFile);
+    Assert.assertEquals(
+        ImmutableList.of(
+            "a,b,c_json", "1,1,\"{\"\"c\"\":1}\"", "2,2,\"{\"\"c\"\":2}\""
+        ),
+        results
+    );
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testExportSketchColumns(String unusedContextName, Map<String, Object> context) throws IOException
+  {
+    final RowSignature rowSignature = RowSignature.builder()
+                                                  .add("__time", ColumnType.LONG)
+                                                  .add("a", ColumnType.LONG)
+                                                  .add("b", ColumnType.LONG)
+                                                  .add("c_json", ColumnType.STRING).build();
+
+    final File exportDir = newTempFolder("export");
+    final String sql = StringUtils.format("INSERT INTO\n"
+                                          + "EXTERN(local(exportPath=>'%s'))\n"
+                                          + "AS CSV\n"
+                                          + "SELECT\n"
+                                          + "  \"a\",\n"
+                                          + "  \"b\",\n"
+                                          + "  ds_hll(b) c_ds_hll\n"
+                                          + "FROM (\n"
+                                          + "  SELECT *\n"
+                                          + "  FROM TABLE(\n"
+                                          + "    EXTERN(\n"
+                                          + "      '{\"type\":\"inline\",\"data\":\"a,b\\n1,b1\\n2,b2\"}',\n"
+                                          + "      '{\"type\":\"csv\",\"findColumnsFromHeader\":true}'\n"
+                                          + "    )\n"
+                                          + "  ) EXTEND (\"a\" BIGINT, \"b\" VARCHAR)\n"
+                                          + ")\n"
+                                          + "GROUP BY 1,2", exportDir.getAbsolutePath());
+
+    testIngestQuery().setSql(sql)
+                     .setExpectedDataSource("foo1")
+                     .setQueryContext(context)
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(ImmutableSet.of())
+                     .setExpectedResultRows(ImmutableList.of())
+                     .verifyResults();
+
+    Assert.assertEquals(
+        2, // result file and manifest file
+        Objects.requireNonNull(exportDir.listFiles()).length
+    );
+
+    File resultFile = new File(exportDir, "query-test-query-worker0-partition0.csv");
+    List<String> results = readResultsFromFile(resultFile);
+    Assert.assertEquals(
+        ImmutableList.of(
+            "a,b,c_ds_hll", "1,b1,\"\"\"AgEHDAMIAQBa1y0L\"\"\"", "2,b2,\"\"\"AgEHDAMIAQCi6V0G\"\"\""
+        ),
+        results
+    );
+  }
+
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testEmptyExport(String unusedContextName, Map<String, Object> context) throws IOException
+  {
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("dim1", ColumnType.STRING)
+                                            .add("cnt", ColumnType.LONG).build();
+
+    File exportDir = newTempFolder("export");
+    final String sql = StringUtils.format("INSERT INTO "
+                                          + "EXTERN(local(exportPath=>'%s'))"
+                                          + "AS CSV "
+                                          + "SELECT cnt, dim1 AS dim "
+                                          + "FROM foo "
+                                          + "WHERE dim1='nonexistentvalue'", exportDir.getAbsolutePath());
+
+    testIngestQuery().setSql(sql)
+                     .setExpectedDataSource("foo1")
+                     .setQueryContext(context)
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(ImmutableSet.of())
+                     .setExpectedResultRows(ImmutableList.of())
+                     .verifyResults();
+
+    Assert.assertEquals(
+        2, // result file and manifest file
+        Objects.requireNonNull(exportDir.listFiles()).length
+    );
+
+    File resultFile = new File(exportDir, "query-test-query-worker0-partition0.csv");
+    List<String> results = readResultsFromFile(resultFile);
+    Assert.assertEquals(
+        ImmutableList.of(
+            "cnt,dim"
+        ),
+        results
     );
   }
 
@@ -174,6 +375,54 @@ public class MSQExportTest extends MSQTestBase
       }
       return results;
     }
+  }
+
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testExportWithLimit(String unusedContextName, Map<String, Object> context) throws IOException
+  {
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("dim1", ColumnType.STRING)
+                                            .add("cnt", ColumnType.LONG).build();
+
+    File exportDir = newTempFolder("export");
+
+    Map<String, Object> queryContext = new HashMap<>(context);
+    queryContext.put(MultiStageQueryContext.CTX_ROWS_PER_PAGE, 1);
+
+    final String sql = StringUtils.format("insert into extern(local(exportPath=>'%s')) as csv select cnt, dim1 from foo limit 3", exportDir.getAbsolutePath());
+
+    testIngestQuery().setSql(sql)
+                     .setExpectedDataSource("foo1")
+                     .setQueryContext(queryContext)
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(ImmutableSet.of())
+                     .setExpectedResultRows(ImmutableList.of())
+                     .verifyResults();
+
+    Assert.assertEquals(
+        ImmutableList.of(
+            "cnt,dim1",
+            "1,"
+        ),
+        readResultsFromFile(new File(exportDir, "query-test-query-worker0-partition0.csv"))
+    );
+    Assert.assertEquals(
+        ImmutableList.of(
+            "cnt,dim1",
+            "1,10.1"
+        ),
+        readResultsFromFile(new File(exportDir, "query-test-query-worker0-partition1.csv"))
+    );
+    Assert.assertEquals(
+        ImmutableList.of(
+            "cnt,dim1",
+            "1,2"
+            ),
+        readResultsFromFile(new File(exportDir, "query-test-query-worker0-partition2.csv"))
+    );
   }
 
   private void verifyManifestFile(File exportDir, List<File> resultFiles) throws IOException

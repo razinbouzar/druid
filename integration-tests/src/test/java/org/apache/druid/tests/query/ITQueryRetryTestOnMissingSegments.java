@@ -61,8 +61,8 @@ import java.util.Map;
 @Guice(moduleFactory = DruidTestModuleFactory.class)
 public class ITQueryRetryTestOnMissingSegments
 {
-  private static final String WIKIPEDIA_DATA_SOURCE = "wikipedia_editstream";
-  private static final String QUERIES_RESOURCE = "/queries/wikipedia_editstream_queries_query_retry_test.json";
+  private static final String TWITTERSTREAM_DATA_SOURCE = "twitterstream";
+  private static final String QUERIES_RESOURCE = "/queries/twitterstream_queries_query_retry_test.json";
 
   /**
    * This enumeration represents an expectation after finishing running the test query.
@@ -97,9 +97,9 @@ public class ITQueryRetryTestOnMissingSegments
   @BeforeMethod
   public void before()
   {
-    // ensure that wikipedia segment is loaded completely
+    // ensure that twitterstream segments are loaded completely
     ITRetryUtil.retryUntilTrue(
-        () -> coordinatorClient.areSegmentsLoaded(WIKIPEDIA_DATA_SOURCE), "wikipedia segment load"
+        () -> coordinatorClient.areSegmentsLoaded(TWITTERSTREAM_DATA_SOURCE), "twitterstream segments load"
     );
   }
 
@@ -128,13 +128,19 @@ public class ITQueryRetryTestOnMissingSegments
     testQueries(buildQuery(1, false), Expectation.ALL_SUCCESS);
   }
 
+  @Test
+  public void testFailureWhenLastSegmentIsMissingWithPartialResultsDisallowed() throws Exception
+  {
+    // Since retry is disabled and partial result is not allowed, the query must fail since the last segment
+    // is missing/unavailable.
+    testQueries(buildQuery(0, false, 2), Expectation.QUERY_FAILURE);
+  }
+
   private void testQueries(String queryWithResultsStr, Expectation expectation) throws Exception
   {
     final List<QueryWithResults> queries = jsonMapper.readValue(
         queryWithResultsStr,
-        new TypeReference<List<QueryWithResults>>()
-        {
-        }
+        new TypeReference<>() {}
     );
     testQueries(queries, expectation);
   }
@@ -156,9 +162,7 @@ public class ITQueryRetryTestOnMissingSegments
 
         List<Map<String, Object>> result = jsonMapper.readValue(
             responseHolder.getContent(),
-            new TypeReference<List<Map<String, Object>>>()
-            {
-            }
+            new TypeReference<>() {}
         );
         if (!QueryResultVerifier.compareResults(
             result,
@@ -220,14 +224,19 @@ public class ITQueryRetryTestOnMissingSegments
 
   private String buildQuery(int numRetriesOnMissingSegments, boolean allowPartialResults) throws IOException
   {
+    return buildQuery(numRetriesOnMissingSegments, allowPartialResults, -1);
+  }
+
+  private String buildQuery(int numRetriesOnMissingSegments, boolean allowPartialResults, int unavailableSegmentIdx) throws IOException
+  {
     return StringUtils.replace(
         AbstractIndexerTest.getResourceAsString(QUERIES_RESOURCE),
         "%%CONTEXT%%",
-        jsonMapper.writeValueAsString(buildContext(numRetriesOnMissingSegments, allowPartialResults))
+        jsonMapper.writeValueAsString(buildContext(numRetriesOnMissingSegments, allowPartialResults, unavailableSegmentIdx))
     );
   }
 
-  private static Map<String, Object> buildContext(int numRetriesOnMissingSegments, boolean allowPartialResults)
+  private static Map<String, Object> buildContext(int numRetriesOnMissingSegments, boolean allowPartialResults, int unavailableSegmentIdx)
   {
     final Map<String, Object> context = new HashMap<>();
     // Disable cache so that each run hits historical.
@@ -236,6 +245,7 @@ public class ITQueryRetryTestOnMissingSegments
     context.put(QueryContexts.NUM_RETRIES_ON_MISSING_SEGMENTS_KEY, numRetriesOnMissingSegments);
     context.put(QueryContexts.RETURN_PARTIAL_RESULTS_KEY, allowPartialResults);
     context.put(ServerManagerForQueryErrorTest.QUERY_RETRY_TEST_CONTEXT_KEY, true);
+    context.put(ServerManagerForQueryErrorTest.QUERY_RETRY_UNAVAILABLE_SEGMENT_IDX_KEY, unavailableSegmentIdx);
     return context;
   }
 }

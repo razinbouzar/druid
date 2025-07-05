@@ -20,7 +20,6 @@
 package org.apache.druid.msq.indexing;
 
 import com.google.common.collect.Iterables;
-import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.allocation.MemoryAllocator;
 import org.apache.druid.frame.allocation.SingleMemoryAllocatorFactory;
 import org.apache.druid.frame.channel.BlockingQueueFrameChannel;
@@ -31,6 +30,9 @@ import org.apache.druid.frame.processor.FrameChannelMixer;
 import org.apache.druid.frame.processor.FrameProcessorExecutor;
 import org.apache.druid.frame.read.FrameReader;
 import org.apache.druid.frame.write.FrameWriters;
+import org.apache.druid.msq.counters.CounterTracker;
+import org.apache.druid.msq.counters.CpuCounters;
+import org.apache.druid.msq.exec.FrameWriterSpec;
 import org.apache.druid.msq.input.stage.InputChannels;
 import org.apache.druid.msq.input.stage.ReadablePartition;
 import org.apache.druid.msq.input.stage.ReadablePartitions;
@@ -39,6 +41,7 @@ import org.apache.druid.msq.kernel.StageDefinition;
 import org.apache.druid.msq.kernel.StageId;
 import org.apache.druid.msq.kernel.StagePartition;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -54,26 +57,36 @@ public class InputChannelsImpl implements InputChannels
 {
   private final QueryDefinition queryDefinition;
   private final InputChannelFactory channelFactory;
+  private final FrameWriterSpec frameWriterSpec;
   private final Supplier<MemoryAllocator> allocatorMaker;
   private final FrameProcessorExecutor exec;
-  private final String cancellationId;
   private final Map<StagePartition, ReadablePartition> readablePartitionMap;
+
+  @Nullable
+  private final String cancellationId;
+
+  @Nullable
+  private final CounterTracker counterTracker;
 
   public InputChannelsImpl(
       final QueryDefinition queryDefinition,
       final ReadablePartitions readablePartitions,
       final InputChannelFactory channelFactory,
+      final FrameWriterSpec frameWriterSpec,
       final Supplier<MemoryAllocator> allocatorMaker,
       final FrameProcessorExecutor exec,
-      final String cancellationId
+      @Nullable final String cancellationId,
+      @Nullable final CounterTracker counterTracker
   )
   {
     this.queryDefinition = queryDefinition;
     this.readablePartitionMap = new HashMap<>();
     this.channelFactory = channelFactory;
+    this.frameWriterSpec = frameWriterSpec;
     this.allocatorMaker = allocatorMaker;
     this.exec = exec;
     this.cancellationId = cancellationId;
+    this.counterTracker = counterTracker;
 
     for (final ReadablePartition readablePartition : readablePartitions) {
       readablePartitionMap.put(
@@ -129,12 +142,11 @@ public class InputChannelsImpl implements InputChannels
           stageDefinition.getFrameReader(),
           queueChannel.writable(),
           FrameWriters.makeFrameWriterFactory(
-              FrameType.ROW_BASED,
+              frameWriterSpec.getRowBasedFrameType(),
               new SingleMemoryAllocatorFactory(allocatorMaker.get()),
               stageDefinition.getFrameReader().signature(),
-
-              // No sortColumns, because FrameChannelMerger generates frames that are sorted all on its own
-              Collections.emptyList()
+              Collections.emptyList(),
+              frameWriterSpec.getRemoveNullBytes()
           ),
           stageDefinition.getSortKey(),
           null,
@@ -144,7 +156,10 @@ public class InputChannelsImpl implements InputChannels
       // Discard future, since there is no need to keep it. We aren't interested in its return value. If it fails,
       // downstream processors are notified through fail(e) on in-memory channels. If we need to cancel it, we use
       // the cancellationId.
-      exec.runFully(merger, cancellationId);
+      exec.runFully(
+          counterTracker == null ? merger : counterTracker.trackCpu(merger, CpuCounters.LABEL_MERGE_INPUT),
+          cancellationId
+      );
 
       return queueChannel.readable();
     }
@@ -169,7 +184,10 @@ public class InputChannelsImpl implements InputChannels
       // Discard future, since there is no need to keep it. We aren't interested in its return value. If it fails,
       // downstream processors are notified through fail(e) on in-memory channels. If we need to cancel it, we use
       // the cancellationId.
-      exec.runFully(muxer, cancellationId);
+      exec.runFully(
+          counterTracker == null ? muxer : counterTracker.trackCpu(muxer, CpuCounters.LABEL_MERGE_INPUT),
+          cancellationId
+      );
 
       return queueChannel.readable();
     }

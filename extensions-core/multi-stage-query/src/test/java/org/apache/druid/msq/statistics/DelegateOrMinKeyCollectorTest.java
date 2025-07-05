@@ -20,7 +20,7 @@
 package org.apache.druid.msq.statistics;
 
 import com.google.common.collect.ImmutableList;
-import org.apache.druid.common.config.NullHandling;
+import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.key.ClusterBy;
 import org.apache.druid.frame.key.KeyColumn;
 import org.apache.druid.frame.key.KeyOrder;
@@ -42,10 +42,6 @@ public class DelegateOrMinKeyCollectorTest
   private final ClusterBy clusterBy = new ClusterBy(ImmutableList.of(new KeyColumn("x", KeyOrder.ASCENDING)), 0);
   private final RowSignature signature = RowSignature.builder().add("x", ColumnType.LONG).build();
   private final Comparator<RowKey> comparator = clusterBy.keyComparator(signature);
-
-  static {
-    NullHandling.initializeForTests();
-  }
 
   @Test
   public void testEmpty()
@@ -158,6 +154,7 @@ public class DelegateOrMinKeyCollectorTest
   {
     return KeyTestUtils.createKey(
         KeyTestUtils.createKeySignature(clusterBy.getColumns(), signature),
+        FrameType.latestRowBased(),
         objects
     );
   }

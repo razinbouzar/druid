@@ -16,25 +16,25 @@
  * limitations under the License.
  */
 
-import { Intent } from '@blueprintjs/core';
+import { Intent, ResizeSensor } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { ResizeSensor2 } from '@blueprintjs/popover2';
-import { C, dedupe, T } from '@druid-toolkit/query';
 import type { Ace } from 'ace-builds';
 import ace from 'ace-builds';
 import classNames from 'classnames';
+import { dedupe } from 'druid-query-toolkit';
 import debounce from 'lodash.debounce';
 import React from 'react';
 import AceEditor from 'react-ace';
 
+import { getHjsonCompletions } from '../../../ace-completions/hjson-completions';
+import { getSqlCompletions } from '../../../ace-completions/sql-completions';
+import { NATIVE_JSON_QUERY_COMPLETIONS } from '../../../druid-models';
 import { AppToaster } from '../../../singletons';
 import { AceEditorStateCache } from '../../../singletons/ace-editor-state-cache';
 import type { ColumnMetadata, QuerySlice, RowColumn } from '../../../utils';
-import { findAllSqlQueriesInText, findMap, uniq } from '../../../utils';
+import { findAllSqlQueriesInText, findMap } from '../../../utils';
 
 import './flexible-query-input.scss';
-
-const langTools = ace.require('ace/ext/language_tools');
 
 const V_PADDING = 10;
 
@@ -46,8 +46,6 @@ export interface FlexibleQueryInputProps {
   showGutter?: boolean;
   placeholder?: string;
   columnMetadata?: readonly ColumnMetadata[];
-  currentSchema?: string;
-  currentTable?: string;
   editorStateId?: string;
   leaveBackground?: boolean;
 }
@@ -56,11 +54,6 @@ export interface FlexibleQueryInputState {
   // For reasons (https://github.com/securingsincity/react-ace/issues/415) react ace editor needs an explicit height
   // Since this component will grow and shrink dynamically we will measure its height and then set it.
   editorHeight: number;
-  quotedCompletions: Ace.Completion[];
-  unquotedCompletions: Ace.Completion[];
-  prevColumnMetadata?: readonly ColumnMetadata[];
-  prevCurrentTable?: string;
-  prevCurrentSchema?: string;
 }
 
 export class FlexibleQueryInput extends React.PureComponent<
@@ -73,97 +66,10 @@ export class FlexibleQueryInput extends React.PureComponent<
   private lastFoundQueries: QuerySlice[] = [];
   private highlightFoundQuery: { row: number; marker: number } | undefined;
 
-  private readonly aceCompleters: Ace.Completer[] = [
-    // Prepend with default completers to ensure completion data from
-    // editing mode (e.g. 'dsql') is included in addition to local completions
-    langTools.snippetCompleter,
-    langTools.keyWordCompleter,
-    langTools.textCompleter,
-    // Local completions
-    {
-      getCompletions: (_state, session, pos, prefix, callback) => {
-        const charBeforePrefix = session.getLine(pos.row)[pos.column - prefix.length - 1];
-        callback(
-          null,
-          charBeforePrefix === '"' ? this.state.unquotedCompletions : this.state.quotedCompletions,
-        );
-      },
-    },
-  ];
-
-  static getCompletions(
-    columnMetadata: readonly ColumnMetadata[],
-    currentSchema: string | undefined,
-    currentTable: string | undefined,
-    quote: boolean,
-  ): Ace.Completion[] {
-    return ([] as Ace.Completion[]).concat(
-      uniq(columnMetadata.map(d => d.TABLE_SCHEMA)).map(v => ({
-        value: quote ? String(T(v)) : v,
-        score: 10,
-        meta: 'schema',
-      })),
-      uniq(
-        columnMetadata
-          .filter(d => (currentSchema ? d.TABLE_SCHEMA === currentSchema : true))
-          .map(d => d.TABLE_NAME),
-      ).map(v => ({
-        value: quote ? String(T(v)) : v,
-        score: 49,
-        meta: 'table',
-      })),
-      uniq(
-        columnMetadata
-          .filter(d =>
-            currentTable && currentSchema
-              ? d.TABLE_NAME === currentTable && d.TABLE_SCHEMA === currentSchema
-              : true,
-          )
-          .map(d => d.COLUMN_NAME),
-      ).map(v => ({
-        value: quote ? String(C(v)) : v,
-        score: 50,
-        meta: 'column',
-      })),
-    );
-  }
-
-  static getDerivedStateFromProps(props: FlexibleQueryInputProps, state: FlexibleQueryInputState) {
-    const { columnMetadata, currentSchema, currentTable } = props;
-
-    if (
-      columnMetadata &&
-      (columnMetadata !== state.prevColumnMetadata ||
-        currentSchema !== state.prevCurrentSchema ||
-        currentTable !== state.prevCurrentTable)
-    ) {
-      return {
-        quotedCompletions: FlexibleQueryInput.getCompletions(
-          columnMetadata,
-          currentSchema,
-          currentTable,
-          true,
-        ),
-        unquotedCompletions: FlexibleQueryInput.getCompletions(
-          columnMetadata,
-          currentSchema,
-          currentTable,
-          false,
-        ),
-        prevColumnMetadata: columnMetadata,
-        prevCurrentSchema: currentSchema,
-        prevCurrentTable: currentTable,
-      };
-    }
-    return null;
-  }
-
   constructor(props: FlexibleQueryInputProps) {
     super(props);
     this.state = {
       editorHeight: 200,
-      quotedCompletions: [],
-      unquotedCompletions: [],
     };
   }
 
@@ -244,6 +150,43 @@ export class FlexibleQueryInput extends React.PureComponent<
 
     const jsonMode = queryString.trim().startsWith('{');
 
+    const getColumnMetadata = () => this.props.columnMetadata;
+    const cmp: Ace.Completer[] = [
+      {
+        getCompletions: (_state, session, pos, prefix, callback) => {
+          const allText = session.getValue();
+          const line = session.getLine(pos.row);
+          const charBeforePrefix = line[pos.column - prefix.length - 1];
+          if (allText.trim().startsWith('{')) {
+            const lines = allText.split('\n').slice(0, pos.row + 1);
+            const lastLineIndex = lines.length - 1;
+            lines[lastLineIndex] = lines[lastLineIndex].slice(0, pos.column - prefix.length - 1);
+            callback(
+              null,
+              getHjsonCompletions({
+                jsonCompletions: NATIVE_JSON_QUERY_COMPLETIONS,
+                textBefore: lines.join('\n'),
+                charBeforePrefix,
+                prefix,
+              }),
+            );
+          } else {
+            const lineBeforePrefix = line.slice(0, pos.column - prefix.length - 1);
+            callback(
+              null,
+              getSqlCompletions({
+                allText,
+                lineBeforePrefix,
+                charBeforePrefix,
+                prefix,
+                columnMetadata: getColumnMetadata(),
+              }),
+            );
+          }
+        },
+      },
+    ];
+
     return (
       <AceEditor
         mode={jsonMode ? 'hjson' : 'dsql'}
@@ -253,8 +196,8 @@ export class FlexibleQueryInput extends React.PureComponent<
           this.props.leaveBackground ? undefined : 'no-background',
         )}
         // 'react-ace' types are incomplete. Completion options can accept completers array.
-        enableBasicAutocompletion={jsonMode ? true : (this.aceCompleters as any)}
-        enableLiveAutocompletion={jsonMode ? true : (this.aceCompleters as any)}
+        enableBasicAutocompletion={cmp as any}
+        enableLiveAutocompletion={cmp as any}
         name="ace-editor"
         onChange={this.handleChange}
         focus
@@ -294,7 +237,7 @@ export class FlexibleQueryInput extends React.PureComponent<
     // Set the key in the AceEditor to force a rebind and prevent an error that happens otherwise
     return (
       <div className="flexible-query-input">
-        <ResizeSensor2 onResize={this.handleAceContainerResize}>
+        <ResizeSensor onResize={this.handleAceContainerResize}>
           <div
             className={classNames('ace-container', running ? 'query-running' : 'query-idle')}
             onClick={e => {
@@ -352,6 +295,7 @@ export class FlexibleQueryInput extends React.PureComponent<
                   ),
                   'sub-query-highlight',
                   'text',
+                  false,
                 );
               this.highlightFoundQuery = { row, marker };
             }}
@@ -365,7 +309,7 @@ export class FlexibleQueryInput extends React.PureComponent<
           >
             {this.renderAce()}
           </div>
-        </ResizeSensor2>
+        </ResizeSensor>
       </div>
     );
   }

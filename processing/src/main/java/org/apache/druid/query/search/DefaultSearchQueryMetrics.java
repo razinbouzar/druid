@@ -152,6 +152,12 @@ public class DefaultSearchQueryMetrics implements SearchQueryMetrics
   }
 
   @Override
+  public void projection(String projection)
+  {
+    delegateQueryMetrics.projection(projection);
+  }
+
+  @Override
   public void filterBundle(FilterBundle.BundleInfo bundleInfo)
   {
     delegateQueryMetrics.filterBundle(bundleInfo);
@@ -209,6 +215,12 @@ public class DefaultSearchQueryMetrics implements SearchQueryMetrics
   public QueryMetrics reportSegmentAndCacheTime(long timeNs)
   {
     return delegateQueryMetrics.reportSegmentAndCacheTime(timeNs);
+  }
+
+  @Override
+  public QueryMetrics reportResultCachePoll(boolean hit)
+  {
+    return delegateQueryMetrics.reportResultCachePoll(hit);
   }
 
   @Override

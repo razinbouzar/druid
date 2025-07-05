@@ -20,14 +20,20 @@
 package org.apache.druid.client.coordinator;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.druid.client.BootstrapSegmentsResponse;
 import org.apache.druid.client.ImmutableSegmentLoadInfo;
 import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.query.lookup.LookupExtractorFactoryContainer;
 import org.apache.druid.rpc.ServiceRetryPolicy;
 import org.apache.druid.segment.metadata.DataSourceInformation;
+import org.apache.druid.server.compaction.CompactionStatusResponse;
+import org.apache.druid.server.coordinator.CoordinatorDynamicConfig;
 import org.apache.druid.timeline.DataSegment;
 import org.joda.time.Interval;
 
+import javax.annotation.Nullable;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public interface CoordinatorClient
@@ -59,7 +65,58 @@ public interface CoordinatorClient
   ListenableFuture<List<DataSourceInformation>> fetchDataSourceInformation(Set<String> datasources);
 
   /**
+   * Fetch bootstrap segments from the coordinator. The results must be streamed back to the caller as the
+   * result set can be large.
+   */
+  ListenableFuture<BootstrapSegmentsResponse> fetchBootstrapSegments();
+
+  /**
    * Returns a new instance backed by a ServiceClient which follows the provided retryPolicy
    */
   CoordinatorClient withRetryPolicy(ServiceRetryPolicy retryPolicy);
+
+  /**
+   * Retrieves list of datasources with used segments.
+   */
+  ListenableFuture<Set<String>> fetchDataSourcesWithUsedSegments();
+
+  /**
+   * Gets the latest compaction snapshots of one or all datasources.
+   * <p>
+   * API: {@code GET /druid/coordinator/v1/compaction/status}
+   *
+   * @param dataSource If passed as non-null, then the returned list contains only
+   *                   the snapshot for this datasource.
+   */
+  ListenableFuture<CompactionStatusResponse> getCompactionSnapshots(@Nullable String dataSource);
+
+  /**
+   * Gets the latest coordinator dynamic config.
+   * <p>
+   * API: {@code GET /druid/coordinator/v1/config}
+   */
+  ListenableFuture<CoordinatorDynamicConfig> getCoordinatorDynamicConfig();
+
+  /**
+   * Updates the Coordinator dynamic config.
+   * <p>
+   * API: {@code POST /druid/coordinator/v1/config}
+   */
+  ListenableFuture<Void> updateCoordinatorDynamicConfig(CoordinatorDynamicConfig dynamicConfig);
+
+  /**
+   * Updates lookups for all tiers.
+   * <p>
+   * API: {@code POST /druid/coordinator/v1/lookups/config}
+   */
+  ListenableFuture<Void> updateAllLookups(Object lookups);
+
+  /**
+   * Gets the lookup configuration for a tier synchronously.
+   * <p>
+   * API: {@code GET /druid/coordinator/v1/lookups/config/<tier>}
+   *
+   * @param tier The name of the tier for which the lookup configuration is to be fetched.
+   */
+  Map<String, LookupExtractorFactoryContainer> fetchLookupsForTierSync(String tier);
 }

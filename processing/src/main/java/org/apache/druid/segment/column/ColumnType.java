@@ -124,6 +124,12 @@ public class ColumnType extends BaseTypeSignature<ValueType>
     return Types.fromString(ColumnTypeFactory.getInstance(), typeName);
   }
 
+  @Nullable
+  public static ColumnType fromCapabilities(@Nullable ColumnCapabilities capabilities)
+  {
+    return capabilities != null ? capabilities.toColumnType() : null;
+  }
+
   public static ColumnType ofArray(ColumnType elementType)
   {
     return ColumnTypeFactory.getInstance().ofArray(elementType);
@@ -229,4 +235,13 @@ public class ColumnType extends BaseTypeSignature<ValueType>
     return ColumnType.DOUBLE;
   }
 
+  @Nullable
+  public static ColumnType leastRestrictiveType(Iterable<ColumnType> types)
+  {
+    ColumnType leastRestrictiveType = null;
+    for (ColumnType type : types) {
+      leastRestrictiveType = leastRestrictiveType(leastRestrictiveType, type);
+    }
+    return leastRestrictiveType;
+  }
 }

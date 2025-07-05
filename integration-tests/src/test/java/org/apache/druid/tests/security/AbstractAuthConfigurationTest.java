@@ -27,7 +27,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.inject.Inject;
 import org.apache.calcite.avatica.AvaticaSqlException;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.guice.annotations.Client;
 import org.apache.druid.guice.annotations.ExtensionPoint;
 import org.apache.druid.java.util.common.StringUtils;
@@ -37,6 +36,9 @@ import org.apache.druid.java.util.http.client.CredentialedHttpClient;
 import org.apache.druid.java.util.http.client.HttpClient;
 import org.apache.druid.java.util.http.client.auth.BasicCredentials;
 import org.apache.druid.java.util.http.client.response.StatusResponseHolder;
+import org.apache.druid.msq.dart.controller.sql.DartSqlEngine;
+import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.http.SqlTaskStatus;
 import org.apache.druid.server.security.Access;
 import org.apache.druid.server.security.Action;
 import org.apache.druid.server.security.Resource;
@@ -46,6 +48,7 @@ import org.apache.druid.sql.avatica.DruidAvaticaJsonHandler;
 import org.apache.druid.testing.IntegrationTestingConfig;
 import org.apache.druid.testing.clients.CoordinatorResourceTestClient;
 import org.apache.druid.testing.utils.HttpUtil;
+import org.apache.druid.testing.utils.MsqTestQueryHelper;
 import org.apache.druid.testing.utils.TestQueryHelper;
 import org.apache.druid.tests.indexer.AbstractIndexerTest;
 import org.jboss.netty.handler.codec.http.HttpMethod;
@@ -94,9 +97,7 @@ public abstract class AbstractAuthConfigurationTest
       "SELECT * FROM sys.tasks WHERE datasource IN ('auth_test')";
 
   protected static final TypeReference<List<Map<String, Object>>> SYS_SCHEMA_RESULTS_TYPE_REFERENCE =
-      new TypeReference<List<Map<String, Object>>>()
-      {
-      };
+      new TypeReference<>() {};
 
   /**
    * create a ResourceAction set of permissions that can only read a 'auth_test' datasource, for Authorizer
@@ -113,6 +114,10 @@ public abstract class AbstractAuthConfigurationTest
       new ResourceAction(
           new Resource("auth_test", ResourceType.DATASOURCE),
           Action.READ
+      ),
+      new ResourceAction(
+          new Resource(QueryContexts.ENGINE, ResourceType.QUERY_CONTEXT),
+          Action.WRITE
       ),
       new ResourceAction(
           new Resource("auth_test_ctx", ResourceType.QUERY_CONTEXT),
@@ -223,6 +228,9 @@ public abstract class AbstractAuthConfigurationTest
 
   @Inject
   protected ObjectMapper jsonMapper;
+
+  @Inject
+  protected MsqTestQueryHelper msqHelper;
 
   @Inject
   @Client
@@ -546,6 +554,56 @@ public abstract class AbstractAuthConfigurationTest
   }
 
   @Test
+  public void test_msqQueryWithContext_datasourceOnlyUser_fail() throws Exception
+  {
+    final String query = "select count(*) from auth_test";
+    makeMSQQueryRequest(
+        getHttpClient(User.DATASOURCE_ONLY_USER),
+        query,
+        ImmutableMap.of("auth_test_ctx", "should-be-denied"),
+        HttpResponseStatus.FORBIDDEN
+    );
+  }
+
+  @Test
+  public void test_msqQueryWithContext_datasourceAndContextParamsUser_succeed() throws Exception
+  {
+    final String query = "select count(*) from auth_test";
+    StatusResponseHolder responseHolder = makeMSQQueryRequest(
+        getHttpClient(User.DATASOURCE_AND_CONTEXT_PARAMS_USER),
+        query,
+        ImmutableMap.of("auth_test_ctx", "should-be-allowed"),
+        HttpResponseStatus.ACCEPTED
+    );
+    String taskId = jsonMapper.readValue(responseHolder.getContent(), SqlTaskStatus.class).getTaskId();
+    msqHelper.pollTaskIdForSuccess(taskId);
+  }
+
+  @Test
+  public void test_dartQueryWithContext_datasourceOnlyUser_fail() throws Exception
+  {
+    final String query = "select count(*) from auth_test";
+    makeDartQueryRequest(
+        getHttpClient(User.DATASOURCE_ONLY_USER),
+        query,
+        ImmutableMap.of("auth_test_ctx", "should-be-denied"),
+        HttpResponseStatus.FORBIDDEN
+    );
+  }
+
+  @Test
+  public void test_dartQueryWithContext_datasourceAndContextParamsUser_succeed() throws Exception
+  {
+    final String query = "select count(*) from auth_test";
+    makeDartQueryRequest(
+        getHttpClient(User.DATASOURCE_AND_CONTEXT_PARAMS_USER),
+        query,
+        ImmutableMap.of("auth_test_ctx", "should-be-allowed"),
+        HttpResponseStatus.OK
+    );
+  }
+
+  @Test
   public void test_sqlQueryWithContext_datasourceOnlyUser_fail() throws Exception
   {
     final String query = "select count(*) from auth_test";
@@ -733,12 +791,45 @@ public abstract class AbstractAuthConfigurationTest
       HttpResponseStatus expectedStatus
   ) throws Exception
   {
-    return makeSQLQueryRequest(httpClient, query, ImmutableMap.of(), expectedStatus);
+    return makeSQLQueryRequest(httpClient, query, "/druid/v2/sql", ImmutableMap.of(), expectedStatus);
   }
 
   protected StatusResponseHolder makeSQLQueryRequest(
       HttpClient httpClient,
       String query,
+      Map<String, Object> context,
+      HttpResponseStatus expectedStatus
+  ) throws Exception
+  {
+    return makeSQLQueryRequest(httpClient, query, "/druid/v2/sql", context, expectedStatus);
+  }
+
+  protected StatusResponseHolder makeMSQQueryRequest(
+      HttpClient httpClient,
+      String query,
+      Map<String, Object> context,
+      HttpResponseStatus expectedStatus
+  ) throws Exception
+  {
+    return makeSQLQueryRequest(httpClient, query, "/druid/v2/sql/task", context, expectedStatus);
+  }
+
+  protected StatusResponseHolder makeDartQueryRequest(
+      HttpClient httpClient,
+      String query,
+      Map<String, Object> context,
+      HttpResponseStatus expectedStatus
+  ) throws Exception
+  {
+    final Map<String, Object> dartContext = new HashMap<>(context);
+    dartContext.put(QueryContexts.ENGINE, DartSqlEngine.NAME);
+    return makeSQLQueryRequest(httpClient, query, "/druid/v2/sql", dartContext, expectedStatus);
+  }
+
+  protected StatusResponseHolder makeSQLQueryRequest(
+      HttpClient httpClient,
+      String query,
+      String path,
       Map<String, Object> context,
       HttpResponseStatus expectedStatus
   ) throws Exception
@@ -750,7 +841,7 @@ public abstract class AbstractAuthConfigurationTest
     return HttpUtil.makeRequestWithExpectedStatus(
         httpClient,
         HttpMethod.POST,
-        config.getBrokerUrl() + "/druid/v2/sql",
+        config.getBrokerUrl() + path,
         jsonMapper.writeValueAsBytes(queryMap),
         expectedStatus
     );
@@ -959,7 +1050,6 @@ public abstract class AbstractAuthConfigurationTest
   {
     String json = StringUtils.replace(template, "%%HISTORICAL%%", config.getHistoricalInternalHost());
     json = StringUtils.replace(json, "%%BROKER%%", config.getBrokerInternalHost());
-    json = StringUtils.replace(json, "%%NON_LEADER%%", String.valueOf(NullHandling.defaultLongValue()));
     return json;
   }
 }

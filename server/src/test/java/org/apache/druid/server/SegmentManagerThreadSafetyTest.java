@@ -31,10 +31,9 @@ import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.Execs;
 import org.apache.druid.java.util.emitter.EmittingLogger;
-import org.apache.druid.segment.QueryableIndex;
+import org.apache.druid.segment.PhysicalSegmentInspector;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentLazyLoadFailCallback;
-import org.apache.druid.segment.StorageAdapter;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.loading.DataSegmentPusher;
 import org.apache.druid.segment.loading.LeastBytesUsedStorageLocationSelectorStrategy;
@@ -59,7 +58,6 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.mockito.Mockito;
 
-import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -246,7 +244,7 @@ public class SegmentManagerThreadSafetyTest
     {
       return new Segment()
       {
-        StorageAdapter storageAdapter = Mockito.mock(StorageAdapter.class);
+        PhysicalSegmentInspector rowCountInspector = Mockito.mock(PhysicalSegmentInspector.class);
 
         @Override
         public SegmentId getId()
@@ -260,23 +258,13 @@ public class SegmentManagerThreadSafetyTest
           return segment.getInterval();
         }
 
-        @Nullable
-        @Override
-        public QueryableIndex asQueryableIndex()
-        {
-          throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public StorageAdapter asStorageAdapter()
-        {
-          Mockito.when(storageAdapter.getNumRows()).thenReturn(1);
-          return storageAdapter;
-        }
-
         @Override
         public <T> T as(Class<T> clazz)
         {
+          if (PhysicalSegmentInspector.class.equals(clazz)) {
+            Mockito.when(rowCountInspector.getNumRows()).thenReturn(1);
+            return (T) rowCountInspector;
+          }
           return null;
         }
 

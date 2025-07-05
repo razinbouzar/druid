@@ -43,7 +43,6 @@ public class OutputChannelsTest
     Assert.assertEquals(IntSets.emptySet(), channels.getPartitionNumbers());
     Assert.assertEquals(Collections.emptyList(), channels.getAllChannels());
     Assert.assertEquals(Collections.emptyList(), channels.getChannelsForPartition(0));
-    Assert.assertTrue(channels.areReadableChannelsReady());
   }
 
   @Test
@@ -55,7 +54,6 @@ public class OutputChannelsTest
     Assert.assertEquals(1, channels.getAllChannels().size());
     Assert.assertEquals(Collections.emptyList(), channels.getChannelsForPartition(0));
     Assert.assertEquals(1, channels.getChannelsForPartition(1).size());
-    Assert.assertTrue(channels.areReadableChannelsReady());
   }
 
   @Test
@@ -77,7 +75,6 @@ public class OutputChannelsTest
     Assert.assertEquals(IntSet.of(1), readOnlyChannels.getPartitionNumbers());
     Assert.assertEquals(1, readOnlyChannels.getAllChannels().size());
     Assert.assertEquals(1, channels.getChannelsForPartition(1).size());
-    Assert.assertTrue(channels.areReadableChannelsReady());
 
     final IllegalStateException e = Assert.assertThrows(
         IllegalStateException.class,
@@ -100,5 +97,29 @@ public class OutputChannelsTest
         ThrowableMessageMatcher.hasMessage(CoreMatchers.equalTo(
             "Frame allocator is not available. The output channel might be marked as read-only, hence memory allocator is not required."))
     );
+  }
+
+  @Test
+  public void test_sanityCheck()
+  {
+    final OutputChannels channelsDuplicatedPartition = OutputChannels.wrap(ImmutableList.of(
+        OutputChannel.nil(1),
+        OutputChannel.nil(1)
+    ));
+    final IllegalStateException e = Assert.assertThrows(
+        IllegalStateException.class,
+        channelsDuplicatedPartition::verifySingleChannel
+    );
+    Assert.assertEquals("Expected one channel for partition [1], but got [2]", e.getMessage());
+
+    final OutputChannels channelsNegativePartition = OutputChannels.wrap(ImmutableList.of(OutputChannel.nil(-1)));
+    final IllegalStateException e2 = Assert.assertThrows(
+        IllegalStateException.class,
+        channelsNegativePartition::verifySingleChannel
+    );
+    Assert.assertEquals("Expected partitionNumber >= 0, but got [-1]", e2.getMessage());
+
+    final OutputChannels channels = OutputChannels.wrap(ImmutableList.of(OutputChannel.nil(1), OutputChannel.nil(2)));
+    Assert.assertEquals(channels, channels.verifySingleChannel());
   }
 }

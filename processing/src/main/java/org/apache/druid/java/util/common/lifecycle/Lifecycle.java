@@ -21,7 +21,7 @@ package org.apache.druid.java.util.common.lifecycle;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.logger.Logger;
 
@@ -442,7 +442,7 @@ public class Lifecycle
           }
         }
         if (doStart) {
-          log.debug("Invoking start method[%s] on object[%s].", method, o);
+          log.info("Starting lifecycle [%s#%s]", o.getClass().getSimpleName(), method.getName());
           method.invoke(o);
         }
       }
@@ -460,7 +460,7 @@ public class Lifecycle
           }
         }
         if (doStop) {
-          log.debug("Invoking stop method[%s] on object[%s].", method, o);
+          log.debug("Stopping lifecyle [%s#%s].", o.getClass().getSimpleName(), method.getName());
           try {
             method.invoke(o);
           }

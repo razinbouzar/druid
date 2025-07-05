@@ -27,6 +27,7 @@ import org.apache.druid.java.util.emitter.service.ServiceEmitter;
 import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
 import org.joda.time.Interval;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -40,6 +41,11 @@ import java.util.stream.Collectors;
  */
 public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMetrics<QueryType>
 {
+  public static final String QUERY_WAIT_TIME = "query/wait/time";
+  public static final String QUERY_SEGMENT_TIME = "query/segment/time";
+  public static final String QUERY_SEGMENT_AND_CACHE_TIME = "query/segmentAndCache/time";
+  public static final String QUERY_RESULT_CACHE_HIT = "query/resultCache/hit";
+
   protected final ServiceMetricEvent.Builder builder = new ServiceMetricEvent.Builder();
   protected final Map<String, Number> metrics = new HashMap<>();
 
@@ -48,15 +54,18 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
    */
   protected Thread ownerThread = Thread.currentThread();
 
-  private static String getTableNamesAsString(DataSource dataSource)
+  public static String getTableNamesAsString(Set<String> tableNames)
   {
-    final Set<String> names = dataSource.getTableNames();
-
-    if (names.size() == 1) {
-      return Iterables.getOnlyElement(names);
+    if (tableNames.size() == 1) {
+      return Iterables.getOnlyElement(tableNames);
     } else {
-      return names.stream().sorted().collect(Collectors.toList()).toString();
+      return tableNames.stream().sorted().collect(Collectors.toList()).toString();
     }
+  }
+
+  public static String[] getIntervalsAsStringArray(Collection<Interval> intervals)
+  {
+    return intervals.stream().map(Interval::toString).toArray(String[]::new);
   }
 
   protected void checkModifiedFromOwnerThread()
@@ -93,7 +102,7 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   @Override
   public void dataSource(QueryType query)
   {
-    setDimension(DruidMetrics.DATASOURCE, getTableNamesAsString(query.getDataSource()));
+    setDimension(DruidMetrics.DATASOURCE, getTableNamesAsString(query.getDataSource().getTableNames()));
   }
 
   @Override
@@ -108,7 +117,7 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
     checkModifiedFromOwnerThread();
     builder.setDimension(
         DruidMetrics.INTERVAL,
-        query.getIntervals().stream().map(Interval::toString).toArray(String[]::new)
+        getIntervalsAsStringArray(query.getIntervals())
     );
   }
 
@@ -191,6 +200,12 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   }
 
   @Override
+  public void projection(String projection)
+  {
+    setDimension("projection", projection);
+  }
+
+  @Override
   public void identity(String identity)
   {
     // Emit nothing by default.
@@ -229,19 +244,25 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   @Override
   public QueryMetrics<QueryType> reportWaitTime(long timeNs)
   {
-    return reportMillisTimeMetric("query/wait/time", timeNs);
+    return reportMillisTimeMetric(QUERY_WAIT_TIME, timeNs);
   }
 
   @Override
   public QueryMetrics<QueryType> reportSegmentTime(long timeNs)
   {
-    return reportMillisTimeMetric("query/segment/time", timeNs);
+    return reportMillisTimeMetric(QUERY_SEGMENT_TIME, timeNs);
   }
 
   @Override
   public QueryMetrics<QueryType> reportSegmentAndCacheTime(long timeNs)
   {
-    return reportMillisTimeMetric("query/segmentAndCache/time", timeNs);
+    return reportMillisTimeMetric(QUERY_SEGMENT_AND_CACHE_TIME, timeNs);
+  }
+
+  @Override
+  public QueryMetrics<QueryType> reportResultCachePoll(boolean hit)
+  {
+    return reportMetric(QUERY_RESULT_CACHE_HIT, hit ? 1 : 0);
   }
 
   @Override

@@ -19,6 +19,7 @@
 
 package org.apache.druid.frame.processor;
 
+import com.google.common.base.Preconditions;
 import it.unimi.dsi.fastutil.ints.Int2ObjectRBTreeMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectSortedMap;
 import it.unimi.dsi.fastutil.ints.IntSortedSet;
@@ -75,6 +76,26 @@ public class OutputChannels
   }
 
   /**
+   * Verifies there is exactly one channel per partition.
+   */
+  public OutputChannels verifySingleChannel()
+  {
+    for (int partitionNumber : getPartitionNumbers()) {
+      final List<OutputChannel> outputChannelsForPartition =
+          getChannelsForPartition(partitionNumber);
+
+      Preconditions.checkState(partitionNumber >= 0, "Expected partitionNumber >= 0, but got [%s]", partitionNumber);
+      Preconditions.checkState(
+          outputChannelsForPartition.size() == 1,
+          "Expected one channel for partition [%s], but got [%s]",
+          partitionNumber,
+          outputChannelsForPartition.size()
+      );
+    }
+    return this;
+  }
+
+  /**
    * Returns the set of partition numbers that appear across all channels.
    */
   public IntSortedSet getPartitionNumbers()
@@ -119,16 +140,5 @@ public class OutputChannels
   public OutputChannels readOnly()
   {
     return wrapReadOnly(outputChannels);
-  }
-
-  public boolean areReadableChannelsReady()
-  {
-    for (final OutputChannel outputChannel : outputChannels) {
-      if (!outputChannel.isReadableChannelReady()) {
-        return false;
-      }
-    }
-
-    return true;
   }
 }

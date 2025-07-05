@@ -20,6 +20,7 @@
 package org.apache.druid.msq.querykit.groupby;
 
 import com.google.common.collect.Iterables;
+import org.apache.druid.collections.NonBlockingPool;
 import org.apache.druid.collections.ResourceHolder;
 import org.apache.druid.frame.Frame;
 import org.apache.druid.frame.channel.FrameWithPartition;
@@ -53,13 +54,17 @@ import org.apache.druid.query.groupby.epinephelinae.RowBasedGrouperHelper;
 import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.ColumnSelectorFactory;
+import org.apache.druid.segment.CompleteSegment;
+import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.Segment;
-import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.TimeBoundaryInspector;
 import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.timeline.SegmentId;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Function;
 
 /**
@@ -71,6 +76,7 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
   private static final Logger log = new Logger(GroupByPreShuffleFrameProcessor.class);
   private final GroupByQuery query;
   private final GroupingEngine groupingEngine;
+  private final NonBlockingPool<ByteBuffer> bufferPool;
   private final ColumnSelectorFactory frameWriterColumnSelectorFactory;
   private final Closer closer = Closer.create();
 
@@ -83,8 +89,9 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
   public GroupByPreShuffleFrameProcessor(
       final GroupByQuery query,
       final GroupingEngine groupingEngine,
+      final NonBlockingPool<ByteBuffer> bufferPool,
       final ReadableInput baseInput,
-      final Function<SegmentReference, SegmentReference> segmentMapFn,
+      final SegmentMapFunction segmentMapFn,
       final ResourceHolder<WritableFrameChannel> outputChannelHolder,
       final ResourceHolder<FrameWriterFactory> frameWriterFactoryHolder
   )
@@ -97,6 +104,7 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
     );
     this.query = query;
     this.groupingEngine = groupingEngine;
+    this.bufferPool = bufferPool;
     this.frameWriterColumnSelectorFactory = RowBasedGrouperHelper.createResultRowBasedColumnSelectorFactory(
         query,
         () -> resultYielder.get(),
@@ -146,12 +154,15 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
   protected ReturnOrAwait<Unit> runWithSegment(final SegmentWithDescriptor segment) throws IOException
   {
     if (resultYielder == null) {
-      final ResourceHolder<Segment> segmentHolder = closer.register(segment.getOrLoad());
+      final ResourceHolder<CompleteSegment> segmentHolder = closer.register(segment.getOrLoad());
+      final Segment mappedSegment = closer.register(mapSegment(segmentHolder.get().getSegment()).orElseThrow());
 
       final Sequence<ResultRow> rowSequence =
           groupingEngine.process(
               query.withQuerySegmentSpec(new SpecificSegmentSpec(segment.getDescriptor())),
-              mapSegment(segmentHolder.get()).asStorageAdapter(),
+              Objects.requireNonNull(mappedSegment.as(CursorFactory.class)),
+              mappedSegment.as(TimeBoundaryInspector.class),
+              bufferPool,
               null
           );
 
@@ -178,12 +189,15 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
 
       if (inputChannel.canRead()) {
         final Frame frame = inputChannel.read();
-        final FrameSegment frameSegment = new FrameSegment(frame, inputFrameReader, SegmentId.dummy("x"));
+        final FrameSegment frameSegment = new FrameSegment(frame, inputFrameReader);
+        final Segment mappedSegment = mapSegment(frameSegment).orElseThrow();
 
         final Sequence<ResultRow> rowSequence =
             groupingEngine.process(
                 query.withQuerySegmentSpec(new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY)),
-                mapSegment(frameSegment).asStorageAdapter(),
+                Objects.requireNonNull(mappedSegment.as(CursorFactory.class)),
+                mappedSegment.as(TimeBoundaryInspector.class),
+                bufferPool,
                 null
             );
 

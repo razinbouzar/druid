@@ -27,6 +27,7 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntAVLTreeSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
 import org.apache.druid.error.DruidException;
+import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.key.ClusterByPartition;
 import org.apache.druid.frame.key.ClusterByPartitions;
 import org.apache.druid.java.util.common.Either;
@@ -54,6 +55,7 @@ import org.apache.druid.msq.statistics.ClusterByStatisticsCollector;
 import org.apache.druid.msq.statistics.ClusterByStatisticsSnapshot;
 import org.apache.druid.msq.statistics.CompleteKeyStatisticsInformation;
 import org.apache.druid.msq.statistics.PartialKeyStatisticsInformation;
+import org.apache.druid.msq.util.MultiStageQueryContext;
 
 import javax.annotation.Nullable;
 import java.util.Date;
@@ -63,7 +65,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.stream.IntStream;
 
 /**
  * Controller-side state machine for each stage. Used by {@link ControllerQueryKernel} to form the overall state
@@ -81,6 +82,11 @@ class ControllerStageTracker
   private final int workerCount;
 
   private final WorkerInputs workerInputs;
+
+  /**
+   * Type to use for row-based frames, generally based on {@link MultiStageQueryContext#getRowBasedFrameType}.
+   */
+  private final FrameType rowBasedFrameType;
 
   // worker-> workerStagePhase
   // Controller keeps track of the stage with this map.
@@ -129,15 +135,17 @@ class ControllerStageTracker
   private ControllerStageTracker(
       final StageDefinition stageDef,
       final WorkerInputs workerInputs,
+      final FrameType rowBasedFrameType,
       final int maxRetainedPartitionSketchBytes
   )
   {
     this.stageDef = stageDef;
     this.workerCount = workerInputs.workerCount();
     this.workerInputs = workerInputs;
+    this.rowBasedFrameType = rowBasedFrameType;
     this.maxRetainedPartitionSketchBytes = maxRetainedPartitionSketchBytes;
 
-    initializeWorkerState(workerCount);
+    initializeWorkerState(workerInputs.workers());
 
     if (stageDef.mustGatherResultKeyStatistics()) {
       this.completeKeyStatisticsInformation =
@@ -149,14 +157,13 @@ class ControllerStageTracker
   }
 
   /**
-   * Initialize stage for each worker to {@link ControllerWorkerStagePhase#NEW}
-   *
-   * @param workerCount
+   * Initialize stage for each worker to {@link ControllerWorkerStagePhase#NEW}.
    */
-  private void initializeWorkerState(int workerCount)
+  private void initializeWorkerState(IntSet workers)
   {
-    IntStream.range(0, workerCount)
-             .forEach(wokerNumber -> workerToPhase.put(wokerNumber, ControllerWorkerStagePhase.NEW));
+    for (int workerNumber : workers) {
+      workerToPhase.put(workerNumber, ControllerWorkerStagePhase.NEW);
+    }
   }
 
   /**
@@ -169,6 +176,7 @@ class ControllerStageTracker
       final Int2IntMap stageWorkerCountMap,
       final InputSpecSlicer slicer,
       final WorkerAssignmentStrategy assignmentStrategy,
+      final FrameType rowBasedFrameType,
       final int maxRetainedPartitionSketchBytes,
       final long maxInputBytesPerWorker
   )
@@ -184,6 +192,7 @@ class ControllerStageTracker
     return new ControllerStageTracker(
         stageDef,
         workerInputs,
+        rowBasedFrameType,
         maxRetainedPartitionSketchBytes
     );
   }
@@ -405,7 +414,7 @@ class ControllerStageTracker
       throw new ISE("Stage does not gather result key statistics");
     }
 
-    if (workerNumber < 0 || workerNumber >= workerCount) {
+    if (!workerInputs.workers().contains(workerNumber)) {
       throw new IAE("Invalid workerNumber [%s]", workerNumber);
     }
 
@@ -524,7 +533,7 @@ class ControllerStageTracker
       throw new ISE("Stage does not gather result key statistics");
     }
 
-    if (workerNumber < 0 || workerNumber >= workerCount) {
+    if (!workerInputs.workers().contains(workerNumber)) {
       throw new IAE("Invalid workerNumber [%s]", workerNumber);
     }
 
@@ -551,7 +560,10 @@ class ControllerStageTracker
             timeChunk,
             (ignored, collector) -> {
               if (collector == null) {
-                collector = stageDef.createResultKeyStatisticsCollector(maxRetainedPartitionSketchBytes);
+                collector = stageDef.createResultKeyStatisticsCollector(
+                    rowBasedFrameType,
+                    maxRetainedPartitionSketchBytes
+                );
               }
               collector.addAll(clusterByStatisticsSnapshot);
               return collector;
@@ -658,7 +670,7 @@ class ControllerStageTracker
       throw new ISE("Stage does not gather result key statistics");
     }
 
-    if (workerNumber < 0 || workerNumber >= workerCount) {
+    if (!workerInputs.workers().contains(workerNumber)) {
       throw new IAE("Invalid workerNumber [%s]", workerNumber);
     }
 
@@ -678,7 +690,10 @@ class ControllerStageTracker
           STATIC_TIME_CHUNK_FOR_PARALLEL_MERGE,
           (timeChunk, stats) -> {
             if (stats == null) {
-              stats = stageDef.createResultKeyStatisticsCollector(maxRetainedPartitionSketchBytes);
+              stats = stageDef.createResultKeyStatisticsCollector(
+                  rowBasedFrameType,
+                  maxRetainedPartitionSketchBytes
+              );
             }
             stats.addAll(clusterByStatsSnapshot);
             return stats;
@@ -765,7 +780,7 @@ class ControllerStageTracker
     this.resultPartitionBoundaries = clusterByPartitions;
     this.resultPartitions = ReadablePartitions.striped(
         stageDef.getStageNumber(),
-        workerCount,
+        workerInputs.workers(),
         clusterByPartitions.size()
     );
 
@@ -790,7 +805,7 @@ class ControllerStageTracker
       throw DruidException.defensive("Cannot setDoneReadingInput for stage[%s], it is not sorting", stageDef.getId());
     }
 
-    if (workerNumber < 0 || workerNumber >= workerCount) {
+    if (!workerInputs.workers().contains(workerNumber)) {
       throw new IAE("Invalid workerNumber[%s] for stage[%s]", workerNumber, stageDef.getId());
     }
 
@@ -832,7 +847,7 @@ class ControllerStageTracker
   @SuppressWarnings("unchecked")
   boolean setResultsCompleteForWorker(final int workerNumber, final Object resultObject)
   {
-    if (workerNumber < 0 || workerNumber >= workerCount) {
+    if (!workerInputs.workers().contains(workerNumber)) {
       throw new IAE("Invalid workerNumber [%s]", workerNumber);
     }
 
@@ -861,7 +876,7 @@ class ControllerStageTracker
         this.resultObject = resultObject;
       } else {
         //noinspection unchecked
-        this.resultObject = getStageDefinition().getProcessorFactory()
+        this.resultObject = getStageDefinition().getProcessor()
                                                 .mergeAccumulatedResult(this.resultObject, resultObject);
       }
     } else {
@@ -949,14 +964,18 @@ class ControllerStageTracker
         resultPartitionBoundaries = maybeResultPartitionBoundaries.valueOrThrow();
         resultPartitions = ReadablePartitions.striped(
             stageNumber,
-            workerCount,
+            workerInputs.workers(),
             resultPartitionBoundaries.size()
         );
-      } else if (shuffleSpec.kind() == ShuffleKind.MIX) {
-        resultPartitionBoundaries = ClusterByPartitions.oneUniversalPartition();
-        resultPartitions = ReadablePartitions.striped(stageNumber, workerCount, shuffleSpec.partitionCount());
       } else {
-        resultPartitions = ReadablePartitions.striped(stageNumber, workerCount, shuffleSpec.partitionCount());
+        if (shuffleSpec.kind() == ShuffleKind.MIX) {
+          resultPartitionBoundaries = ClusterByPartitions.oneUniversalPartition();
+        }
+        resultPartitions = ReadablePartitions.striped(
+            stageNumber,
+            workerInputs.workers(),
+            shuffleSpec.partitionCount()
+        );
       }
     } else {
       // No reshuffling: retain partitioning from nonbroadcast inputs.

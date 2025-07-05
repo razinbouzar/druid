@@ -28,12 +28,12 @@ import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.emitter.EmittingLogger;
 import org.apache.druid.query.TableDataSource;
-import org.apache.druid.query.planning.DataSourceAnalysis;
-import org.apache.druid.segment.ReferenceCountingSegment;
+import org.apache.druid.segment.PhysicalSegmentInspector;
+import org.apache.druid.segment.ReferenceCountedSegmentProvider;
+import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentLazyLoadFailCallback;
-import org.apache.druid.segment.StorageAdapter;
 import org.apache.druid.segment.join.table.IndexedTable;
-import org.apache.druid.segment.join.table.ReferenceCountingIndexedTable;
+import org.apache.druid.segment.join.table.ReferenceCountedIndexedTableProvider;
 import org.apache.druid.segment.loading.SegmentCacheManager;
 import org.apache.druid.segment.loading.SegmentLoadingException;
 import org.apache.druid.server.metrics.SegmentRowCountDistribution;
@@ -67,80 +67,6 @@ public class SegmentManager
 
   private final ConcurrentHashMap<String, DataSourceState> dataSources = new ConcurrentHashMap<>();
 
-  /**
-   * Represent the state of a data source including the timeline, total segment size, and number of segments.
-   */
-  public static class DataSourceState
-  {
-    private final VersionedIntervalTimeline<String, ReferenceCountingSegment> timeline =
-        new VersionedIntervalTimeline<>(Ordering.natural());
-
-    private final ConcurrentHashMap<SegmentId, ReferenceCountingIndexedTable> tablesLookup = new ConcurrentHashMap<>();
-    private long totalSegmentSize;
-    private long numSegments;
-    private long rowCount;
-    private final SegmentRowCountDistribution segmentRowCountDistribution = new SegmentRowCountDistribution();
-
-    private void addSegment(DataSegment segment, long numOfRows)
-    {
-      totalSegmentSize += segment.getSize();
-      numSegments++;
-      rowCount += (numOfRows);
-      if (segment.isTombstone()) {
-        segmentRowCountDistribution.addTombstoneToDistribution();
-      } else {
-        segmentRowCountDistribution.addRowCountToDistribution(numOfRows);
-      }
-    }
-
-    private void removeSegment(DataSegment segment, long numOfRows)
-    {
-      totalSegmentSize -= segment.getSize();
-      numSegments--;
-      rowCount -= numOfRows;
-      if (segment.isTombstone()) {
-        segmentRowCountDistribution.removeTombstoneFromDistribution();
-      } else {
-        segmentRowCountDistribution.removeRowCountFromDistribution(numOfRows);
-      }
-    }
-
-    public VersionedIntervalTimeline<String, ReferenceCountingSegment> getTimeline()
-    {
-      return timeline;
-    }
-
-    public ConcurrentHashMap<SegmentId, ReferenceCountingIndexedTable> getTablesLookup()
-    {
-      return tablesLookup;
-    }
-
-    public long getAverageRowCount()
-    {
-      return numSegments == 0 ? 0 : rowCount / numSegments;
-    }
-
-    public long getTotalSegmentSize()
-    {
-      return totalSegmentSize;
-    }
-
-    public long getNumSegments()
-    {
-      return numSegments;
-    }
-
-    public boolean isEmpty()
-    {
-      return numSegments == 0;
-    }
-
-    private SegmentRowCountDistribution getSegmentRowCountDistribution()
-    {
-      return segmentRowCountDistribution;
-    }
-  }
-
   @Inject
   public SegmentManager(SegmentCacheManager cacheManager)
   {
@@ -151,6 +77,11 @@ public class SegmentManager
   Map<String, DataSourceState> getDataSources()
   {
     return dataSources;
+  }
+
+  public Set<String> getDataSourceNames()
+  {
+    return dataSources.keySet();
   }
 
   /**
@@ -174,11 +105,6 @@ public class SegmentManager
     return CollectionUtils.mapValues(dataSources, SegmentManager.DataSourceState::getSegmentRowCountDistribution);
   }
 
-  public Set<String> getDataSourceNames()
-  {
-    return dataSources.keySet();
-  }
-
   /**
    * Returns a map of dataSource to the number of segments managed by this segmentManager.  This method should be
    * carefully because the returned map might be different from the actual data source states.
@@ -193,36 +119,28 @@ public class SegmentManager
   /**
    * Returns the timeline for a datasource, if it exists. The analysis object passed in must represent a scan-based
    * datasource of a single table.
-   *
-   * @param analysis data source analysis information
-   *
-   * @return timeline, if it exists
-   *
-   * @throws IllegalStateException if 'analysis' does not represent a scan-based datasource of a single table
    */
-  public Optional<VersionedIntervalTimeline<String, ReferenceCountingSegment>> getTimeline(DataSourceAnalysis analysis)
+  public Optional<VersionedIntervalTimeline<String, ReferenceCountedSegmentProvider>> getTimeline(TableDataSource dataSource)
   {
-    final TableDataSource tableDataSource = getTableDataSource(analysis);
-    return Optional.ofNullable(dataSources.get(tableDataSource.getName())).map(DataSourceState::getTimeline);
+    return Optional.ofNullable(dataSources.get(dataSource.getName())).map(DataSourceState::getTimeline);
   }
 
   /**
    * Returns the collection of {@link IndexedTable} for the entire timeline (since join conditions do not currently
    * consider the queries intervals), if the timeline exists for each of its segments that are joinable.
    */
-  public Optional<Stream<ReferenceCountingIndexedTable>> getIndexedTables(DataSourceAnalysis analysis)
+  public Optional<Stream<ReferenceCountedIndexedTableProvider>> getIndexedTables(TableDataSource dataSource)
   {
-    return getTimeline(analysis).map(timeline -> {
+    return getTimeline(dataSource).map(timeline -> {
       // join doesn't currently consider intervals, so just consider all segments
-      final Stream<ReferenceCountingSegment> segments =
+      final Stream<ReferenceCountedSegmentProvider> segments =
           timeline.lookup(Intervals.ETERNITY)
                   .stream()
                   .flatMap(x -> StreamSupport.stream(x.getObject().payloads().spliterator(), false));
-      final TableDataSource tableDataSource = getTableDataSource(analysis);
-      ConcurrentHashMap<SegmentId, ReferenceCountingIndexedTable> tables =
-          Optional.ofNullable(dataSources.get(tableDataSource.getName())).map(DataSourceState::getTablesLookup)
-                  .orElseThrow(() -> new ISE("Datasource %s does not have IndexedTables", tableDataSource.getName()));
-      return segments.map(segment -> tables.get(segment.getId())).filter(Objects::nonNull);
+      ConcurrentHashMap<SegmentId, ReferenceCountedIndexedTableProvider> tables =
+          Optional.ofNullable(dataSources.get(dataSource.getName())).map(DataSourceState::getTablesLookup)
+                  .orElseThrow(() -> new ISE("dataSource[%s] does not have IndexedTables", dataSource.getName()));
+      return segments.map(segment -> tables.get(segment.getBaseSegment().getId())).filter(Objects::nonNull);
     });
   }
 
@@ -232,12 +150,6 @@ public class SegmentManager
       return dataSources.get(dataSourceName).tablesLookup.size() > 0;
     }
     return false;
-  }
-
-  private TableDataSource getTableDataSource(DataSourceAnalysis analysis)
-  {
-    return analysis.getBaseTableDataSource()
-                   .orElseThrow(() -> new ISE("Cannot handle datasource: %s", analysis.getBaseDataSource()));
   }
 
   /**
@@ -256,7 +168,7 @@ public class SegmentManager
       final SegmentLazyLoadFailCallback loadFailed
   ) throws SegmentLoadingException, IOException
   {
-    final ReferenceCountingSegment segment;
+    final ReferenceCountedSegmentProvider segment;
     try {
       segment = cacheManager.getBootstrapSegment(dataSegment, loadFailed);
       if (segment == null) {
@@ -270,7 +182,7 @@ public class SegmentManager
       cacheManager.cleanup(dataSegment);
       throw e;
     }
-    loadSegment(dataSegment, segment, cacheManager::loadSegmentIntoPageCacheOnBootstrap);
+    loadSegmentInternal(dataSegment, segment, cacheManager::loadSegmentIntoPageCacheOnBootstrap);
   }
 
   /**
@@ -286,7 +198,7 @@ public class SegmentManager
    */
   public void loadSegment(final DataSegment dataSegment) throws SegmentLoadingException, IOException
   {
-    final ReferenceCountingSegment segment;
+    final ReferenceCountedSegmentProvider segment;
     try {
       segment = cacheManager.getSegment(dataSegment);
       if (segment == null) {
@@ -300,12 +212,12 @@ public class SegmentManager
       cacheManager.cleanup(dataSegment);
       throw e;
     }
-    loadSegment(dataSegment, segment, cacheManager::loadSegmentIntoPageCache);
+    loadSegmentInternal(dataSegment, segment, cacheManager::loadSegmentIntoPageCache);
   }
 
-  private void loadSegment(
+  private void loadSegmentInternal(
       final DataSegment dataSegment,
-      final ReferenceCountingSegment segment,
+      final ReferenceCountedSegmentProvider segment,
       final Consumer<DataSegment> pageCacheLoadFunction
   ) throws IOException
   {
@@ -316,9 +228,9 @@ public class SegmentManager
         dataSegment.getDataSource(),
         (k, v) -> {
           final DataSourceState dataSourceState = v == null ? new DataSourceState() : v;
-          final VersionedIntervalTimeline<String, ReferenceCountingSegment> loadedIntervals =
+          final VersionedIntervalTimeline<String, ReferenceCountedSegmentProvider> loadedIntervals =
               dataSourceState.getTimeline();
-          final PartitionChunk<ReferenceCountingSegment> entry = loadedIntervals.findChunk(
+          final PartitionChunk<ReferenceCountedSegmentProvider> entry = loadedIntervals.findChunk(
               dataSegment.getInterval(),
               dataSegment.getVersion(),
               dataSegment.getShardSpec().getPartitionNum()
@@ -328,23 +240,29 @@ public class SegmentManager
             log.warn("Told to load an adapter for segment[%s] that already exists", dataSegment.getId());
             resultSupplier.set(false);
           } else {
-            final IndexedTable table = segment.as(IndexedTable.class);
+            final Segment baseSegment = segment.getBaseSegment();
+            final IndexedTable table = baseSegment.as(IndexedTable.class);
             if (table != null) {
               if (dataSourceState.isEmpty() || dataSourceState.numSegments == dataSourceState.tablesLookup.size()) {
-                dataSourceState.tablesLookup.put(segment.getId(), new ReferenceCountingIndexedTable(table));
+                dataSourceState.tablesLookup.put(baseSegment.getId(), new ReferenceCountedIndexedTableProvider(table));
               } else {
-                log.error("Cannot load segment[%s] with IndexedTable, no existing segments are joinable", segment.getId());
+                log.error("Cannot load segment[%s] with IndexedTable, no existing segments are joinable", baseSegment.getId());
               }
             } else if (dataSourceState.tablesLookup.size() > 0) {
-              log.error("Cannot load segment[%s] without IndexedTable, all existing segments are joinable", segment.getId());
+              log.error("Cannot load segment[%s] without IndexedTable, all existing segments are joinable", baseSegment.getId());
             }
             loadedIntervals.add(
                 dataSegment.getInterval(),
                 dataSegment.getVersion(),
                 dataSegment.getShardSpec().createChunk(segment)
             );
-            final StorageAdapter storageAdapter = segment.asStorageAdapter();
-            final long numOfRows = (dataSegment.isTombstone() || storageAdapter == null) ? 0 : storageAdapter.getNumRows();
+            final PhysicalSegmentInspector countInspector = baseSegment.as(PhysicalSegmentInspector.class);
+            final long numOfRows;
+            if (dataSegment.isTombstone() || countInspector == null) {
+              numOfRows = 0;
+            } else {
+              numOfRows = countInspector.getNumRows();
+            }
             dataSourceState.addSegment(dataSegment, numOfRows);
 
             pageCacheLoadFunction.accept(dataSegment);
@@ -372,28 +290,33 @@ public class SegmentManager
             log.info("Told to delete a queryable for a dataSource[%s] that doesn't exist.", dataSourceName);
             return null;
           } else {
-            final VersionedIntervalTimeline<String, ReferenceCountingSegment> loadedIntervals =
+            final VersionedIntervalTimeline<String, ReferenceCountedSegmentProvider> loadedIntervals =
                 dataSourceState.getTimeline();
 
             final ShardSpec shardSpec = segment.getShardSpec();
-            final PartitionChunk<ReferenceCountingSegment> removed = loadedIntervals.remove(
+            final PartitionChunk<ReferenceCountedSegmentProvider> removed = loadedIntervals.remove(
                 segment.getInterval(),
                 segment.getVersion(),
                 // remove() internally searches for a partitionChunk to remove which is *equal* to the given
                 // partitionChunk. Note that partitionChunk.equals() checks only the partitionNum, but not the object.
-                segment.getShardSpec().createChunk(ReferenceCountingSegment.wrapSegment(null, shardSpec))
+                segment.getShardSpec().createChunk(ReferenceCountedSegmentProvider.wrapSegment(null, shardSpec))
             );
-            final ReferenceCountingSegment oldQueryable = (removed == null) ? null : removed.getObject();
+            final ReferenceCountedSegmentProvider oldSegmentRef = (removed == null) ? null : removed.getObject();
 
-            if (oldQueryable != null) {
+            if (oldSegmentRef != null) {
               try (final Closer closer = Closer.create()) {
-                StorageAdapter storageAdapter = oldQueryable.asStorageAdapter();
-                long numOfRows = (segment.isTombstone() || storageAdapter == null) ? 0 : storageAdapter.getNumRows();
+                final PhysicalSegmentInspector countInspector = oldSegmentRef.getBaseSegment().as(PhysicalSegmentInspector.class);
+                final long numOfRows;
+                if (segment.isTombstone() || countInspector == null) {
+                  numOfRows = 0;
+                } else {
+                  numOfRows = countInspector.getNumRows();
+                }
                 dataSourceState.removeSegment(segment, numOfRows);
 
-                closer.register(oldQueryable);
+                closer.register(oldSegmentRef);
                 log.info("Attempting to close segment[%s]", segment.getId());
-                final ReferenceCountingIndexedTable oldTable = dataSourceState.tablesLookup.remove(segment.getId());
+                final ReferenceCountedIndexedTableProvider oldTable = dataSourceState.tablesLookup.remove(segment.getId());
                 if (oldTable != null) {
                   closer.register(oldTable);
                 }
@@ -444,5 +367,80 @@ public class SegmentManager
   public void shutdownBootstrap()
   {
     cacheManager.shutdownBootstrap();
+  }
+
+
+  /**
+   * Represent the state of a data source including the timeline, total segment size, and number of segments.
+   */
+  public static class DataSourceState
+  {
+    private final VersionedIntervalTimeline<String, ReferenceCountedSegmentProvider> timeline =
+        new VersionedIntervalTimeline<>(Ordering.natural());
+
+    private final ConcurrentHashMap<SegmentId, ReferenceCountedIndexedTableProvider> tablesLookup = new ConcurrentHashMap<>();
+    private long totalSegmentSize;
+    private long numSegments;
+    private long rowCount;
+    private final SegmentRowCountDistribution segmentRowCountDistribution = new SegmentRowCountDistribution();
+
+    private void addSegment(DataSegment segment, long numOfRows)
+    {
+      totalSegmentSize += segment.getSize();
+      numSegments++;
+      rowCount += (numOfRows);
+      if (segment.isTombstone()) {
+        segmentRowCountDistribution.addTombstoneToDistribution();
+      } else {
+        segmentRowCountDistribution.addRowCountToDistribution(numOfRows);
+      }
+    }
+
+    private void removeSegment(DataSegment segment, long numOfRows)
+    {
+      totalSegmentSize -= segment.getSize();
+      numSegments--;
+      rowCount -= numOfRows;
+      if (segment.isTombstone()) {
+        segmentRowCountDistribution.removeTombstoneFromDistribution();
+      } else {
+        segmentRowCountDistribution.removeRowCountFromDistribution(numOfRows);
+      }
+    }
+
+    public VersionedIntervalTimeline<String, ReferenceCountedSegmentProvider> getTimeline()
+    {
+      return timeline;
+    }
+
+    public ConcurrentHashMap<SegmentId, ReferenceCountedIndexedTableProvider> getTablesLookup()
+    {
+      return tablesLookup;
+    }
+
+    public long getAverageRowCount()
+    {
+      return numSegments == 0 ? 0 : rowCount / numSegments;
+    }
+
+    public long getTotalSegmentSize()
+    {
+      return totalSegmentSize;
+    }
+
+    public long getNumSegments()
+    {
+      return numSegments;
+    }
+
+    public boolean isEmpty()
+    {
+      return numSegments == 0;
+    }
+
+    private SegmentRowCountDistribution getSegmentRowCountDistribution()
+    {
+      return segmentRowCountDistribution;
+    }
   }
 }

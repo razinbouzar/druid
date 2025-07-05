@@ -24,7 +24,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.apache.calcite.sql.type.SqlTypeName;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.guava.Sequences;
@@ -54,7 +53,6 @@ import org.junit.jupiter.api.Test;
 
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.StreamingOutput;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -76,7 +74,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementFactory,
         objectMapper,
         indexingServiceClient,
-        localFileStorageConnector,
+        s -> localFileStorageConnector,
         authorizerMapper
     );
   }
@@ -206,7 +204,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         new ResultSetInformation(0L, 0L, null, "foo1", null, null),
         null
     );
-    Assert.assertEquals(expected, actual);
+    assertSqlStatementResult(expected, actual);
   }
 
   @Test
@@ -236,7 +234,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         new ResultSetInformation(0L, 0L, null, "foo1", null, null),
         null
     );
-    Assert.assertEquals(expected, actual);
+    assertSqlStatementResult(expected, actual);
   }
 
   @Test
@@ -282,7 +280,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
           }
         }).toErrorResponse()
     );
-    Assert.assertEquals(expected, actual);
+    assertSqlStatementResult(expected, actual);
   }
 
   @Test
@@ -301,16 +299,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
     ), SqlStatementResourceTest.makeOkRequest());
 
     Assert.assertEquals(
-        "{PLAN=[{\"query\":"
-        + "{\"queryType\":\"scan\","
-        + "\"dataSource\":{\"type\":\"table\",\"name\":\"foo\"},"
-        + "\"intervals\":{\"type\":\"intervals\",\"intervals\":[\"-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z\"]},"
-        + "\"resultFormat\":\"compactedList\","
-        + "\"columns\":[\"__time\",\"cnt\",\"dim1\",\"dim2\",\"dim3\",\"m1\",\"m2\",\"unique_dim1\"],"
-        + "\"legacy\":false,"
-        + "\"context\":{\"__resultFormat\":\"object\",\"executionMode\":\"ASYNC\",\"scanSignature\":\"[{\\\"name\\\":\\\"__time\\\",\\\"type\\\":\\\"LONG\\\"},{\\\"name\\\":\\\"cnt\\\",\\\"type\\\":\\\"LONG\\\"},{\\\"name\\\":\\\"dim1\\\",\\\"type\\\":\\\"STRING\\\"},{\\\"name\\\":\\\"dim2\\\",\\\"type\\\":\\\"STRING\\\"},{\\\"name\\\":\\\"dim3\\\",\\\"type\\\":\\\"STRING\\\"},{\\\"name\\\":\\\"m1\\\",\\\"type\\\":\\\"FLOAT\\\"},{\\\"name\\\":\\\"m2\\\",\\\"type\\\":\\\"DOUBLE\\\"},{\\\"name\\\":\\\"unique_dim1\\\",\\\"type\\\":\\\"COMPLEX<hyperUnique>\\\"}]\",\"sqlQueryId\":\"queryId\"},\"columnTypes\":[\"LONG\",\"LONG\",\"STRING\",\"STRING\",\"STRING\",\"FLOAT\",\"DOUBLE\",\"COMPLEX<hyperUnique>\"],\"granularity\":{\"type\":\"all\"}},\"signature\":[{\"name\":\"__time\",\"type\":\"LONG\"},{\"name\":\"dim1\",\"type\":\"STRING\"},{\"name\":\"dim2\",\"type\":\"STRING\"},{\"name\":\"dim3\",\"type\":\"STRING\"},{\"name\":\"cnt\",\"type\":\"LONG\"},{\"name\":\"m1\",\"type\":\"FLOAT\"},{\"name\":\"m2\",\"type\":\"DOUBLE\"},{\"name\":\"unique_dim1\",\"type\":\"COMPLEX<hyperUnique>\"}],\"columnMappings\":[{\"queryColumn\":\"__time\",\"outputColumn\":\"__time\"},{\"queryColumn\":\"dim1\",\"outputColumn\":\"dim1\"},{\"queryColumn\":\"dim2\",\"outputColumn\":\"dim2\"},{\"queryColumn\":\"dim3\",\"outputColumn\":\"dim3\"},{\"queryColumn\":\"cnt\",\"outputColumn\":\"cnt\"},{\"queryColumn\":\"m1\",\"outputColumn\":\"m1\"},{\"queryColumn\":\"m2\",\"outputColumn\":\"m2\"},{\"queryColumn\":\"unique_dim1\",\"outputColumn\":\"unique_dim1\"}]}],"
-        + " RESOURCES=[{\"name\":\"foo\",\"type\":\"DATASOURCE\"}],"
-        + " ATTRIBUTES={\"statementType\":\"SELECT\"}}",
+        "{PLAN=[{\"query\":{\"queryType\":\"scan\",\"dataSource\":{\"type\":\"table\",\"name\":\"foo\"},\"intervals\":{\"type\":\"intervals\",\"intervals\":[\"-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z\"]},\"resultFormat\":\"compactedList\",\"columns\":[\"__time\",\"dim1\",\"dim2\",\"dim3\",\"cnt\",\"m1\",\"m2\",\"unique_dim1\"],\"context\":{\"__resultFormat\":\"object\",\"executionMode\":\"ASYNC\",\"scanSignature\":\"[{\\\"name\\\":\\\"__time\\\",\\\"type\\\":\\\"LONG\\\"},{\\\"name\\\":\\\"dim1\\\",\\\"type\\\":\\\"STRING\\\"},{\\\"name\\\":\\\"dim2\\\",\\\"type\\\":\\\"STRING\\\"},{\\\"name\\\":\\\"dim3\\\",\\\"type\\\":\\\"STRING\\\"},{\\\"name\\\":\\\"cnt\\\",\\\"type\\\":\\\"LONG\\\"},{\\\"name\\\":\\\"m1\\\",\\\"type\\\":\\\"FLOAT\\\"},{\\\"name\\\":\\\"m2\\\",\\\"type\\\":\\\"DOUBLE\\\"},{\\\"name\\\":\\\"unique_dim1\\\",\\\"type\\\":\\\"COMPLEX<hyperUnique>\\\"}]\",\"sqlQueryId\":\"queryId\"},\"columnTypes\":[\"LONG\",\"STRING\",\"STRING\",\"STRING\",\"LONG\",\"FLOAT\",\"DOUBLE\",\"COMPLEX<hyperUnique>\"],\"granularity\":{\"type\":\"all\"},\"legacy\":false},\"signature\":[{\"name\":\"__time\",\"type\":\"LONG\"},{\"name\":\"dim1\",\"type\":\"STRING\"},{\"name\":\"dim2\",\"type\":\"STRING\"},{\"name\":\"dim3\",\"type\":\"STRING\"},{\"name\":\"cnt\",\"type\":\"LONG\"},{\"name\":\"m1\",\"type\":\"FLOAT\"},{\"name\":\"m2\",\"type\":\"DOUBLE\"},{\"name\":\"unique_dim1\",\"type\":\"COMPLEX<hyperUnique>\"}],\"columnMappings\":[{\"queryColumn\":\"__time\",\"outputColumn\":\"__time\"},{\"queryColumn\":\"dim1\",\"outputColumn\":\"dim1\"},{\"queryColumn\":\"dim2\",\"outputColumn\":\"dim2\"},{\"queryColumn\":\"dim3\",\"outputColumn\":\"dim3\"},{\"queryColumn\":\"cnt\",\"outputColumn\":\"cnt\"},{\"queryColumn\":\"m1\",\"outputColumn\":\"m1\"},{\"queryColumn\":\"m2\",\"outputColumn\":\"m2\"},{\"queryColumn\":\"unique_dim1\",\"outputColumn\":\"unique_dim1\"}]}], RESOURCES=[{\"name\":\"foo\",\"type\":\"DATASOURCE\"}], ATTRIBUTES={\"statementType\":\"SELECT\"}}",
         String.valueOf(SqlStatementResourceTest.getResultRowsFromResponse(response).get(0))
     );
   }
@@ -339,7 +328,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementFactory,
         objectMapper,
         indexingServiceClient,
-        NilStorageConnector.getInstance(),
+        s -> NilStorageConnector.getInstance(),
         authorizerMapper
     );
 
@@ -404,6 +393,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
             sqlStatementResult.getQueryId(),
             null,
             ResultFormat.OBJECTLINES.name(),
+            null,
             SqlStatementResourceTest.makeOkRequest()
         ),
         objectMapper
@@ -417,6 +407,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
             sqlStatementResult.getQueryId(),
             0L,
             ResultFormat.OBJECTLINES.name(),
+            null,
             SqlStatementResourceTest.makeOkRequest()
         ),
         objectMapper
@@ -430,6 +421,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
             sqlStatementResult.getQueryId(),
             2L,
             ResultFormat.OBJECTLINES.name(),
+            null,
             SqlStatementResourceTest.makeOkRequest()
         ),
         objectMapper
@@ -496,6 +488,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         null,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
 
@@ -503,6 +496,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         0L,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
 
@@ -510,6 +504,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         1L,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
 
@@ -517,6 +512,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         2L,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
 
@@ -524,6 +520,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         3L,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
 
@@ -531,6 +528,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         4L,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
   }
@@ -576,6 +574,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
                   sqlStatementResult.getQueryId(),
                   null,
                   resultFormat.name(),
+                  null,
                   SqlStatementResourceTest.makeOkRequest()
               ), objectMapper
           )
@@ -588,6 +587,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
                   sqlStatementResult.getQueryId(),
                   0L,
                   resultFormat.name(),
+                  null,
                   SqlStatementResourceTest.makeOkRequest()
               ), objectMapper
           )
@@ -627,6 +627,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         null,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
 
@@ -634,6 +635,7 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         sqlStatementResult.getQueryId(),
         0L,
         ResultFormat.ARRAY.name(),
+        null,
         SqlStatementResourceTest.makeOkRequest()
     )));
   }
@@ -693,18 +695,19 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         MSQTestOverlordServiceClient.CREATED_TIME,
         null,
         MSQTestOverlordServiceClient.DURATION,
-        new ResultSetInformation(NullHandling.sqlCompatible() ? 6L : 5L, 0L, null, "foo1", null, null),
+        new ResultSetInformation(6L, 0L, null, "foo1", null, null),
         null
     );
-    Assert.assertEquals(expected, actual);
+    assertSqlStatementResult(expected, actual);
 
-    Response getResponse = resource.doGetStatus(actual.getQueryId(), SqlStatementResourceTest.makeOkRequest());
+    Response getResponse = resource.doGetStatus(actual.getQueryId(), false, SqlStatementResourceTest.makeOkRequest());
     Assert.assertEquals(Response.Status.OK.getStatusCode(), getResponse.getStatus());
-    Assert.assertEquals(expected, getResponse.getEntity());
+    assertSqlStatementResult(expected, (SqlStatementResult) getResponse.getEntity());
 
     Response resultsResponse = resource.doGetResults(
         actual.getQueryId(),
         0L,
+        null,
         null,
         SqlStatementResourceTest.makeOkRequest()
     );
@@ -736,18 +739,19 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
         MSQTestOverlordServiceClient.CREATED_TIME,
         null,
         MSQTestOverlordServiceClient.DURATION,
-        new ResultSetInformation(NullHandling.sqlCompatible() ? 6L : 5L, 0L, null, "foo1", null, null),
+        new ResultSetInformation(6L, 0L, null, "foo1", null, null),
         null
     );
-    Assert.assertEquals(expected, actual);
+    assertSqlStatementResult(expected, actual);
 
-    Response getResponse = resource.doGetStatus(actual.getQueryId(), SqlStatementResourceTest.makeOkRequest());
+    Response getResponse = resource.doGetStatus(actual.getQueryId(), false, SqlStatementResourceTest.makeOkRequest());
     Assert.assertEquals(Response.Status.OK.getStatusCode(), getResponse.getStatus());
-    Assert.assertEquals(expected, getResponse.getEntity());
+    assertSqlStatementResult(expected, (SqlStatementResult) getResponse.getEntity());
 
     Response resultsResponse = resource.doGetResults(
         actual.getQueryId(),
         0L,
+        null,
         null,
         SqlStatementResourceTest.makeOkRequest()
     );
@@ -763,4 +767,27 @@ public class SqlMSQStatementResourcePostTest extends MSQTestBase
     return context;
   }
 
+  private void assertSqlStatementResult(SqlStatementResult expected, SqlStatementResult actual)
+  {
+    Assert.assertEquals(expected.getQueryId(), actual.getQueryId());
+    Assert.assertEquals(expected.getCreatedAt(), actual.getCreatedAt());
+    Assert.assertEquals(expected.getSqlRowSignature(), actual.getSqlRowSignature());
+    Assert.assertEquals(expected.getDurationMs(), actual.getDurationMs());
+    Assert.assertEquals(expected.getStages(), actual.getStages());
+    Assert.assertEquals(expected.getState(), actual.getState());
+    Assert.assertEquals(expected.getWarnings(), actual.getWarnings());
+    Assert.assertEquals(expected.getResultSetInformation(), actual.getResultSetInformation());
+
+    if (actual.getCounters() == null || expected.getCounters() == null) {
+      Assert.assertEquals(expected.getCounters(), actual.getCounters());
+    } else {
+      Assert.assertEquals(expected.getCounters().toString(), actual.getCounters().toString());
+    }
+
+    if (actual.getErrorResponse() == null || expected.getErrorResponse() == null) {
+      Assert.assertEquals(expected.getErrorResponse(), actual.getErrorResponse());
+    } else {
+      Assert.assertEquals(expected.getErrorResponse().getAsMap(), actual.getErrorResponse().getAsMap());
+    }
+  }
 }

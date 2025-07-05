@@ -20,15 +20,20 @@
 package org.apache.druid.msq.guice;
 
 import com.fasterxml.jackson.databind.Module;
+import com.fasterxml.jackson.databind.jsontype.NamedType;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
 import org.apache.druid.initialization.DruidModule;
 import org.apache.druid.msq.counters.ChannelCounters;
 import org.apache.druid.msq.counters.CounterSnapshotsSerializer;
+import org.apache.druid.msq.counters.CpuCounter;
+import org.apache.druid.msq.counters.CpuCounters;
+import org.apache.druid.msq.counters.NilQueryCounterSnapshot;
 import org.apache.druid.msq.counters.SegmentGenerationProgressCounter;
 import org.apache.druid.msq.counters.SuperSorterProgressTrackerCounter;
 import org.apache.druid.msq.counters.WarningCounters;
+import org.apache.druid.msq.indexing.MSQCompactionRunner;
 import org.apache.druid.msq.indexing.MSQControllerTask;
 import org.apache.druid.msq.indexing.MSQWorkerTask;
 import org.apache.druid.msq.indexing.error.BroadcastTablesTooLargeFault;
@@ -58,13 +63,15 @@ import org.apache.druid.msq.indexing.error.TooManyClusteredByColumnsFault;
 import org.apache.druid.msq.indexing.error.TooManyColumnsFault;
 import org.apache.druid.msq.indexing.error.TooManyInputFilesFault;
 import org.apache.druid.msq.indexing.error.TooManyPartitionsFault;
+import org.apache.druid.msq.indexing.error.TooManyRowsInAWindowFault;
 import org.apache.druid.msq.indexing.error.TooManyRowsWithSameKeyFault;
+import org.apache.druid.msq.indexing.error.TooManySegmentsInTimeChunkFault;
 import org.apache.druid.msq.indexing.error.TooManyWarningsFault;
 import org.apache.druid.msq.indexing.error.TooManyWorkersFault;
 import org.apache.druid.msq.indexing.error.UnknownFault;
 import org.apache.druid.msq.indexing.error.WorkerFailedFault;
 import org.apache.druid.msq.indexing.error.WorkerRpcFailedFault;
-import org.apache.druid.msq.indexing.processor.SegmentGeneratorFrameProcessorFactory;
+import org.apache.druid.msq.indexing.processor.SegmentGeneratorStageProcessor;
 import org.apache.druid.msq.indexing.report.MSQTaskReport;
 import org.apache.druid.msq.input.NilInputSlice;
 import org.apache.druid.msq.input.NilInputSource;
@@ -80,14 +87,15 @@ import org.apache.druid.msq.input.table.SegmentsInputSlice;
 import org.apache.druid.msq.input.table.TableInputSpec;
 import org.apache.druid.msq.kernel.NilExtraInfoHolder;
 import org.apache.druid.msq.querykit.InputNumberDataSource;
-import org.apache.druid.msq.querykit.WindowOperatorQueryFrameProcessorFactory;
-import org.apache.druid.msq.querykit.common.OffsetLimitFrameProcessorFactory;
-import org.apache.druid.msq.querykit.common.SortMergeJoinFrameProcessorFactory;
-import org.apache.druid.msq.querykit.groupby.GroupByPostShuffleFrameProcessorFactory;
-import org.apache.druid.msq.querykit.groupby.GroupByPreShuffleFrameProcessorFactory;
-import org.apache.druid.msq.querykit.results.ExportResultsFrameProcessorFactory;
-import org.apache.druid.msq.querykit.results.QueryResultFrameProcessorFactory;
-import org.apache.druid.msq.querykit.scan.ScanQueryFrameProcessorFactory;
+import org.apache.druid.msq.querykit.RestrictedInputNumberDataSource;
+import org.apache.druid.msq.querykit.WindowOperatorQueryStageProcessor;
+import org.apache.druid.msq.querykit.common.OffsetLimitStageProcessor;
+import org.apache.druid.msq.querykit.common.SortMergeJoinStageProcessor;
+import org.apache.druid.msq.querykit.groupby.GroupByPostShuffleStageProcessor;
+import org.apache.druid.msq.querykit.groupby.GroupByPreShuffleStageProcessor;
+import org.apache.druid.msq.querykit.results.ExportResultsStageProcessor;
+import org.apache.druid.msq.querykit.results.QueryResultStageProcessor;
+import org.apache.druid.msq.querykit.scan.ScanQueryStageProcessor;
 import org.apache.druid.msq.util.PassthroughAggregatorFactory;
 
 import java.util.Collections;
@@ -125,7 +133,9 @@ public class MSQIndexingModule implements DruidModule
       TooManyColumnsFault.class,
       TooManyInputFilesFault.class,
       TooManyPartitionsFault.class,
+      TooManyRowsInAWindowFault.class,
       TooManyRowsWithSameKeyFault.class,
+      TooManySegmentsInTimeChunkFault.class,
       TooManyWarningsFault.class,
       TooManyWorkersFault.class,
       TooManyAttemptsForJob.class,
@@ -146,20 +156,21 @@ public class MSQIndexingModule implements DruidModule
         MSQWorkerTask.class,
 
         // FrameChannelWorkerFactory and FrameChannelWorkerFactoryExtraInfoHolder classes
-        SegmentGeneratorFrameProcessorFactory.class,
-        SegmentGeneratorFrameProcessorFactory.SegmentGeneratorExtraInfoHolder.class,
-        ScanQueryFrameProcessorFactory.class,
-        GroupByPreShuffleFrameProcessorFactory.class,
-        GroupByPostShuffleFrameProcessorFactory.class,
-        OffsetLimitFrameProcessorFactory.class,
+        SegmentGeneratorStageProcessor.class,
+        SegmentGeneratorStageProcessor.SegmentGeneratorExtraInfoHolder.class,
+        ScanQueryStageProcessor.class,
+        GroupByPreShuffleStageProcessor.class,
+        GroupByPostShuffleStageProcessor.class,
+        OffsetLimitStageProcessor.class,
         NilExtraInfoHolder.class,
-        SortMergeJoinFrameProcessorFactory.class,
-        QueryResultFrameProcessorFactory.class,
-        WindowOperatorQueryFrameProcessorFactory.class,
-        ExportResultsFrameProcessorFactory.class,
+        SortMergeJoinStageProcessor.class,
+        QueryResultStageProcessor.class,
+        WindowOperatorQueryStageProcessor.class,
+        ExportResultsStageProcessor.class,
 
         // DataSource classes (note: ExternalDataSource is in MSQSqlModule)
         InputNumberDataSource.class,
+        RestrictedInputNumberDataSource.class,
 
         // TaskReport classes
         MSQTaskReport.class,
@@ -169,6 +180,9 @@ public class MSQIndexingModule implements DruidModule
         SuperSorterProgressTrackerCounter.Snapshot.class,
         WarningCounters.Snapshot.class,
         SegmentGenerationProgressCounter.Snapshot.class,
+        CpuCounters.Snapshot.class,
+        CpuCounter.Snapshot.class,
+        NilQueryCounterSnapshot.class,
 
         // InputSpec classes
         ExternalInputSpec.class,
@@ -189,6 +203,8 @@ public class MSQIndexingModule implements DruidModule
         PassthroughAggregatorFactory.class,
         NilInputSource.class
     );
+
+    module.registerSubtypes(new NamedType(MSQCompactionRunner.class, MSQCompactionRunner.TYPE));
 
     FAULT_CLASSES.forEach(module::registerSubtypes);
     module.addSerializer(new CounterSnapshotsSerializer());

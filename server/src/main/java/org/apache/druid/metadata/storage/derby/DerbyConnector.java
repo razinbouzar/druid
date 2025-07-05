@@ -184,7 +184,7 @@ public class DerbyConnector extends SQLMetadataConnector
   public boolean tableHasColumn(String tableName, String columnName)
   {
     return getDBI().withHandle(
-        new HandleCallback<Boolean>()
+        new HandleCallback<>()
         {
           @Override
           public Boolean withHandle(Handle handle)
@@ -192,13 +192,14 @@ public class DerbyConnector extends SQLMetadataConnector
             try {
               if (tableExists(handle, tableName)) {
                 DatabaseMetaData dbMetaData = handle.getConnection().getMetaData();
-                ResultSet columns = dbMetaData.getColumns(
-                    null,
-                    null,
-                    tableName.toUpperCase(Locale.ENGLISH),
-                    columnName.toUpperCase(Locale.ENGLISH)
-                );
-                return columns.next();
+                try (ResultSet columns = dbMetaData.getColumns(
+                        null,
+                        null,
+                        tableName.toUpperCase(Locale.ENGLISH),
+                        columnName.toUpperCase(Locale.ENGLISH)
+                )) {
+                  return columns.next();
+                }
               } else {
                 return false;
               }

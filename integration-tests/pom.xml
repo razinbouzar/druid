@@ -28,7 +28,7 @@
     <parent>
         <groupId>org.apache.druid</groupId>
         <artifactId>druid</artifactId>
-        <version>31.0.0-SNAPSHOT</version>
+        <version>34.0.0-SNAPSHOT</version>
     </parent>
 
     <repositories>
@@ -42,19 +42,6 @@
         <hadoop.integ.libs>"org.apache.hadoop:hadoop-client-api:${hadoop.compile.version}", "org.apache.hadoop:hadoop-client-runtime:${hadoop.compile.version}", "org.apache.hadoop:hadoop-azure:${hadoop.compile.version}"</hadoop.integ.libs>
         <hadoop.s3.impl>org.apache.hadoop.fs.s3a.S3AFileSystem</hadoop.s3.impl>
     </properties>
-
-    <dependencyManagement>
-        <dependencies>
-             <!-- snakeyaml explicitly pinned to version 1.33 as it is
-             a transitive dependency of com.fasterxml.jackson.dataformat:jackson-dataformat-yaml 2.12.7
-             please remove this pin, after updating jackson-dataform-yaml to version > 2.14.3  / 2.15.0 -->
-            <dependency>
-                <groupId>org.yaml</groupId>
-                <artifactId>snakeyaml</artifactId>
-                <version>1.33</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -278,10 +265,7 @@
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
         </dependency>
-        <dependency>
-            <groupId>com.google.inject.extensions</groupId>
-            <artifactId>guice-multibindings</artifactId>
-        </dependency>
+
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
@@ -298,6 +282,10 @@
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-common</artifactId>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -317,7 +305,7 @@
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-slf4j-impl</artifactId>
+            <artifactId>log4j-slf4j2-impl</artifactId>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -371,7 +359,6 @@
         <dependency>
             <groupId>com.google.inject.extensions</groupId>
             <artifactId>guice-servlet</artifactId>
-            <version>${guice.version}</version>
         </dependency>
         <dependency>
             <groupId>io.confluent</groupId>
@@ -428,6 +415,16 @@
         <dependency>
             <groupId>org.apache.calcite.avatica</groupId>
             <artifactId>avatica-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest-all</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest-core</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -656,7 +653,7 @@
                             </properties>
                             <argLine>
                                 ${jdk.strong.encapsulation.argLine}
-                                -Xmx128m
+                                -Xmx256m
                                 -Duser.timezone=UTC
                                 -Dfile.encoding=UTF-8
                                 -Ddruid.test.config.dockerIp=${env.DOCKER_IP}
@@ -762,6 +759,7 @@
                                 </property>
                             </properties>
                             <argLine>
+                                ${jdk.strong.encapsulation.argLine}
                                 -Duser.timezone=UTC
                                 -Dfile.encoding=UTF-8
                                 -Ddruid.test.config.type=configFile

@@ -55,9 +55,9 @@ import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.IndexMerger;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.QueryableIndexSegment;
-import org.apache.druid.segment.ReferenceCountingSegment;
 import org.apache.druid.segment.SchemaPayload;
 import org.apache.druid.segment.SchemaPayloadPlus;
+import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentSchemaMapping;
 import org.apache.druid.segment.incremental.IncrementalIndexAddResult;
 import org.apache.druid.segment.incremental.IndexSizeExceededException;
@@ -67,14 +67,13 @@ import org.apache.druid.segment.indexing.DataSchema;
 import org.apache.druid.segment.loading.DataSegmentPusher;
 import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
 import org.apache.druid.segment.metadata.FingerprintGenerator;
-import org.apache.druid.segment.realtime.FireDepartmentMetrics;
 import org.apache.druid.segment.realtime.FireHydrant;
-import org.apache.druid.segment.realtime.plumber.Sink;
+import org.apache.druid.segment.realtime.SegmentGenerationMetrics;
+import org.apache.druid.segment.realtime.sink.Sink;
 import org.apache.druid.timeline.DataSegment;
 import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
-import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -113,14 +112,13 @@ public class BatchAppenderator implements Appenderator
   private final String myId;
   private final DataSchema schema;
   private final AppenderatorConfig tuningConfig;
-  private final FireDepartmentMetrics metrics;
+  private final SegmentGenerationMetrics metrics;
   private final DataSegmentPusher dataSegmentPusher;
   private final ObjectMapper objectMapper;
   private final IndexIO indexIO;
   private final IndexMerger indexMerger;
   private final long maxBytesTuningConfig;
   private final boolean skipBytesInMemoryOverheadCheck;
-  private final boolean useMaxMemoryEstimates;
 
   private volatile ListeningExecutorService persistExecutor = null;
   private volatile ListeningExecutorService pushExecutor = null;
@@ -164,14 +162,13 @@ public class BatchAppenderator implements Appenderator
       String id,
       DataSchema schema,
       AppenderatorConfig tuningConfig,
-      FireDepartmentMetrics metrics,
+      SegmentGenerationMetrics metrics,
       DataSegmentPusher dataSegmentPusher,
       ObjectMapper objectMapper,
       IndexIO indexIO,
       IndexMerger indexMerger,
       RowIngestionMeters rowIngestionMeters,
       ParseExceptionHandler parseExceptionHandler,
-      boolean useMaxMemoryEstimates,
       CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig
   )
   {
@@ -189,7 +186,6 @@ public class BatchAppenderator implements Appenderator
     maxBytesTuningConfig = tuningConfig.getMaxBytesInMemoryOrDefault();
     skipBytesInMemoryOverheadCheck = tuningConfig.isSkipBytesInMemoryOverheadCheck();
     maxPendingPersists = tuningConfig.getMaxPendingPersists();
-    this.useMaxMemoryEstimates = useMaxMemoryEstimates;
     this.centralizedDatasourceSchemaConfig = centralizedDatasourceSchemaConfig;
     this.fingerprintGenerator = new FingerprintGenerator(objectMapper);
   }
@@ -236,7 +232,7 @@ public class BatchAppenderator implements Appenderator
     }
 
     if (pushExecutor == null) {
-      // use a blocking single threaded executor to throttle the firehose when write to disk is slow
+      // use a blocking single threaded executor to throttle the input source when write to disk is slow
       pushExecutor = MoreExecutors.listeningDecorator(
           Execs.newBlockingSingleThreaded(
               "[" + StringUtils.encodeForFormat(myId) + "]-batch-appenderator-push",
@@ -397,7 +393,7 @@ public class BatchAppenderator implements Appenderator
 
       Futures.addCallback(
           persistAll(null),
-          new FutureCallback<Object>()
+          new FutureCallback<>()
           {
             @Override
             public void onSuccess(@Nullable Object result)
@@ -480,9 +476,7 @@ public class BatchAppenderator implements Appenderator
           identifier.getVersion(),
           tuningConfig.getAppendableIndexSpec(),
           tuningConfig.getMaxRowsInMemory(),
-          maxBytesTuningConfig,
-          useMaxMemoryEstimates,
-          null
+          maxBytesTuningConfig
       );
       bytesCurrentlyInMemory += calculateSinkMemoryInUsed();
       sinks.put(identifier, retVal);
@@ -816,14 +810,14 @@ public class BatchAppenderator implements Appenderator
       Closer closer = Closer.create();
       try {
         for (FireHydrant fireHydrant : sink) {
-          Pair<ReferenceCountingSegment, Closeable> segmentAndCloseable = fireHydrant.getAndIncrementSegment();
-          final QueryableIndex queryableIndex = segmentAndCloseable.lhs.asQueryableIndex();
+          final Segment segment = fireHydrant.acquireSegment();
+          final QueryableIndex queryableIndex = segment.as(QueryableIndex.class);
           if (queryableIndex != null) {
             rowsinMergedSegment += queryableIndex.getNumRows();
           }
           log.debug("Segment[%s] adding hydrant[%s]", identifier, fireHydrant);
           indexes.add(queryableIndex);
-          closer.register(segmentAndCloseable.rhs);
+          closer.register(segment);
         }
 
         mergedFile = indexMerger.mergeQueryableIndex(
@@ -1074,8 +1068,6 @@ public class BatchAppenderator implements Appenderator
         tuningConfig.getAppendableIndexSpec(),
         tuningConfig.getMaxRowsInMemory(),
         maxBytesTuningConfig,
-        useMaxMemoryEstimates,
-        null,
         hydrants
     );
     retVal.finishWriting(); // this sink is not writable
@@ -1174,7 +1166,7 @@ public class BatchAppenderator implements Appenderator
 
     try {
       final long startTime = System.nanoTime();
-      int numRows = indexToPersist.getIndex().size();
+      int numRows = indexToPersist.getIndex().numRows();
 
       // since the sink may have been persisted before it may have lost its
       // hydrant count, we remember that value in the sinks' metadata, so we have

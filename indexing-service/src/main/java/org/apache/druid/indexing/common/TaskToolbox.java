@@ -43,8 +43,10 @@ import org.apache.druid.java.util.common.FileUtils;
 import org.apache.druid.java.util.emitter.service.ServiceEmitter;
 import org.apache.druid.java.util.metrics.Monitor;
 import org.apache.druid.java.util.metrics.MonitorScheduler;
+import org.apache.druid.query.DruidProcessingConfig;
 import org.apache.druid.query.QueryProcessingPool;
 import org.apache.druid.query.QueryRunnerFactoryConglomerate;
+import org.apache.druid.query.policy.PolicyEnforcer;
 import org.apache.druid.rpc.indexing.OverlordClient;
 import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.IndexMergerV9;
@@ -58,9 +60,9 @@ import org.apache.druid.segment.loading.DataSegmentPusher;
 import org.apache.druid.segment.loading.SegmentCacheManager;
 import org.apache.druid.segment.loading.SegmentLoaderConfig;
 import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
+import org.apache.druid.segment.realtime.ChatHandlerProvider;
 import org.apache.druid.segment.realtime.appenderator.AppenderatorsManager;
 import org.apache.druid.segment.realtime.appenderator.UnifiedIndexerAppenderatorsManager;
-import org.apache.druid.segment.realtime.firehose.ChatHandlerProvider;
 import org.apache.druid.server.DruidNode;
 import org.apache.druid.server.coordination.DataSegmentAnnouncer;
 import org.apache.druid.server.coordination.DataSegmentServerAnnouncer;
@@ -99,6 +101,11 @@ public class TaskToolbox
    * because it may be unavailable, e. g. for batch tasks running in Spark or Hadoop.
    */
   private final Provider<QueryRunnerFactoryConglomerate> queryRunnerFactoryConglomerateProvider;
+  /**
+   * Using Provider, not {@link DruidProcessingConfig} directly, because it may not be available for task
+   * types that do not run queries.
+   */
+  private final Provider<DruidProcessingConfig> processingConfigProvider;
   @Nullable
   private final Provider<MonitorScheduler> monitorSchedulerProvider;
   private final QueryProcessingPool queryProcessingPool;
@@ -110,6 +117,7 @@ public class TaskToolbox
   private final Cache cache;
   private final CacheConfig cacheConfig;
   private final CachePopulatorStats cachePopulatorStats;
+  private final PolicyEnforcer policyEnforcer;
   private final IndexMergerV9 indexMergerV9;
   private final TaskReportFileWriter taskReportFileWriter;
 
@@ -148,6 +156,7 @@ public class TaskToolbox
       DataSegmentServerAnnouncer serverAnnouncer,
       SegmentHandoffNotifierFactory handoffNotifierFactory,
       Provider<QueryRunnerFactoryConglomerate> queryRunnerFactoryConglomerateProvider,
+      Provider<DruidProcessingConfig> processingConfigProvider,
       QueryProcessingPool queryProcessingPool,
       JoinableFactory joinableFactory,
       @Nullable Provider<MonitorScheduler> monitorSchedulerProvider,
@@ -158,6 +167,7 @@ public class TaskToolbox
       Cache cache,
       CacheConfig cacheConfig,
       CachePopulatorStats cachePopulatorStats,
+      PolicyEnforcer policyEnforcer,
       IndexMergerV9 indexMergerV9,
       DruidNodeAnnouncer druidNodeAnnouncer,
       DruidNode druidNode,
@@ -191,6 +201,7 @@ public class TaskToolbox
     this.serverAnnouncer = serverAnnouncer;
     this.handoffNotifierFactory = handoffNotifierFactory;
     this.queryRunnerFactoryConglomerateProvider = queryRunnerFactoryConglomerateProvider;
+    this.processingConfigProvider = processingConfigProvider;
     this.queryProcessingPool = queryProcessingPool;
     this.joinableFactory = joinableFactory;
     this.monitorSchedulerProvider = monitorSchedulerProvider;
@@ -201,6 +212,7 @@ public class TaskToolbox
     this.cache = cache;
     this.cacheConfig = cacheConfig;
     this.cachePopulatorStats = cachePopulatorStats;
+    this.policyEnforcer = policyEnforcer;
     this.indexMergerV9 = Preconditions.checkNotNull(indexMergerV9, "Null IndexMergerV9");
     this.druidNodeAnnouncer = druidNodeAnnouncer;
     this.druidNode = druidNode;
@@ -247,6 +259,11 @@ public class TaskToolbox
     return emitter;
   }
 
+  public PolicyEnforcer getPolicyEnforcer()
+  {
+    return policyEnforcer;
+  }
+
   public DataSegmentPusher getSegmentPusher()
   {
     return segmentPusher;
@@ -285,6 +302,11 @@ public class TaskToolbox
   public QueryRunnerFactoryConglomerate getQueryRunnerFactoryConglomerate()
   {
     return queryRunnerFactoryConglomerateProvider.get();
+  }
+
+  public DruidProcessingConfig getProcessingConfig()
+  {
+    return processingConfigProvider.get();
   }
 
   public QueryProcessingPool getQueryProcessingPool()
@@ -349,7 +371,12 @@ public class TaskToolbox
     for (final Collection<DataSegment> segmentCollection : segmentMultimap.asMap().values()) {
       getTaskActionClient().submit(
           SegmentTransactionalInsertAction.appendAction(
-              ImmutableSet.copyOf(segmentCollection), null, null, null
+              ImmutableSet.copyOf(segmentCollection),
+              null,
+              null,
+              null,
+              null,
+              null
           )
       );
     }
@@ -536,6 +563,7 @@ public class TaskToolbox
     private DataSegmentServerAnnouncer serverAnnouncer;
     private SegmentHandoffNotifierFactory handoffNotifierFactory;
     private Provider<QueryRunnerFactoryConglomerate> queryRunnerFactoryConglomerateProvider;
+    private Provider<DruidProcessingConfig> processingConfigProvider;
     private QueryProcessingPool queryProcessingPool;
     private JoinableFactory joinableFactory;
     private Provider<MonitorScheduler> monitorSchedulerProvider;
@@ -546,6 +574,7 @@ public class TaskToolbox
     private Cache cache;
     private CacheConfig cacheConfig;
     private CachePopulatorStats cachePopulatorStats;
+    private PolicyEnforcer policyEnforcer;
     private IndexMergerV9 indexMergerV9;
     private DruidNodeAnnouncer druidNodeAnnouncer;
     private DruidNode druidNode;
@@ -584,6 +613,7 @@ public class TaskToolbox
       this.serverAnnouncer = other.serverAnnouncer;
       this.handoffNotifierFactory = other.handoffNotifierFactory;
       this.queryRunnerFactoryConglomerateProvider = other.queryRunnerFactoryConglomerateProvider;
+      this.processingConfigProvider = other.processingConfigProvider;
       this.queryProcessingPool = other.queryProcessingPool;
       this.joinableFactory = other.joinableFactory;
       this.monitorSchedulerProvider = other.monitorSchedulerProvider;
@@ -594,6 +624,7 @@ public class TaskToolbox
       this.cache = other.cache;
       this.cacheConfig = other.cacheConfig;
       this.cachePopulatorStats = other.cachePopulatorStats;
+      this.policyEnforcer = other.policyEnforcer;
       this.indexMergerV9 = other.indexMergerV9;
       this.druidNodeAnnouncer = other.druidNodeAnnouncer;
       this.druidNode = other.druidNode;
@@ -642,6 +673,12 @@ public class TaskToolbox
       return this;
     }
 
+    public Builder policyEnforcer(final PolicyEnforcer policyEnforcer)
+    {
+      this.policyEnforcer = policyEnforcer;
+      return this;
+    }
+
     public Builder segmentPusher(final DataSegmentPusher segmentPusher)
     {
       this.segmentPusher = segmentPusher;
@@ -687,6 +724,12 @@ public class TaskToolbox
     public Builder queryRunnerFactoryConglomerateProvider(final Provider<QueryRunnerFactoryConglomerate> queryRunnerFactoryConglomerateProvider)
     {
       this.queryRunnerFactoryConglomerateProvider = queryRunnerFactoryConglomerateProvider;
+      return this;
+    }
+
+    public Builder processingConfigProvider(final Provider<DruidProcessingConfig> processingConfigProvider)
+    {
+      this.processingConfigProvider = processingConfigProvider;
       return this;
     }
 
@@ -874,6 +917,7 @@ public class TaskToolbox
           serverAnnouncer,
           handoffNotifierFactory,
           queryRunnerFactoryConglomerateProvider,
+          processingConfigProvider,
           queryProcessingPool,
           joinableFactory,
           monitorSchedulerProvider,
@@ -884,6 +928,7 @@ public class TaskToolbox
           cache,
           cacheConfig,
           cachePopulatorStats,
+          policyEnforcer,
           indexMergerV9,
           druidNodeAnnouncer,
           druidNode,

@@ -21,6 +21,7 @@ package org.apache.druid.server;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.CountingOutputStream;
 import org.apache.druid.client.DirectDruidClient;
 import org.apache.druid.error.DruidException;
@@ -38,6 +39,8 @@ import org.apache.druid.query.TruncatedResponseContextException;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.server.security.AuthConfig;
 import org.apache.druid.server.security.ForbiddenException;
+import org.eclipse.jetty.http.HttpFields;
+import org.eclipse.jetty.http.HttpHeader;
 
 import javax.annotation.Nullable;
 import javax.servlet.AsyncContext;
@@ -54,6 +57,7 @@ import java.util.Map;
 public abstract class QueryResultPusher
 {
   private static final Logger log = new Logger(QueryResultPusher.class);
+  protected static final String RESULT_TRAILER_HEADERS = QueryResource.RESPONSE_COMPLETE_TRAILER_HEADER;
 
   private final HttpServletRequest request;
   private final String queryId;
@@ -63,6 +67,7 @@ public abstract class QueryResultPusher
   private final QueryResource.QueryMetricCounter counter;
   private final MediaType contentType;
   private final Map<String, String> extraHeaders;
+  private final HttpFields trailerFields;
 
   private StreamingHttpResponseAccumulator accumulator;
   private AsyncContext asyncContext;
@@ -87,6 +92,7 @@ public abstract class QueryResultPusher
     this.counter = counter;
     this.contentType = contentType;
     this.extraHeaders = extraHeaders;
+    this.trailerFields = new HttpFields();
   }
 
   /**
@@ -120,7 +126,9 @@ public abstract class QueryResultPusher
 
       final Response.ResponseBuilder startResponse = resultsWriter.start();
       if (startResponse != null) {
-        startResponse.header(QueryResource.QUERY_ID_RESPONSE_HEADER, queryId);
+        startResponse.header(QueryResource.QUERY_ID_RESPONSE_HEADER, queryId)
+                     .header(HttpHeader.TRAILER.toString(), RESULT_TRAILER_HEADERS);
+
         for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
           startResponse.header(entry.getKey(), entry.getValue());
         }
@@ -141,6 +149,17 @@ public abstract class QueryResultPusher
       response.setHeader(QueryResource.QUERY_ID_RESPONSE_HEADER, queryId);
       for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
         response.setHeader(entry.getKey(), entry.getValue());
+      }
+
+      if (response instanceof org.eclipse.jetty.server.Response) {
+        org.eclipse.jetty.server.Response jettyResponse = (org.eclipse.jetty.server.Response) response;
+
+        jettyResponse.setHeader(HttpHeader.TRAILER.toString(), RESULT_TRAILER_HEADERS);
+        jettyResponse.setTrailers(() -> trailerFields);
+
+        // Start with complete status
+
+        trailerFields.put(QueryResource.RESPONSE_COMPLETE_TRAILER_HEADER, "true");
       }
 
       accumulator = new StreamingHttpResponseAccumulator(queryResponse.getResponseContext(), resultsWriter);
@@ -211,22 +230,8 @@ public abstract class QueryResultPusher
     return handleDruidException(resultsWriter, DruidException.fromFailure(new QueryExceptionCompat(e)));
   }
 
-  private Response handleDruidException(ResultsWriter resultsWriter, DruidException e)
+  private void incrementQueryCounterForException(final DruidException e)
   {
-    if (resultsWriter != null) {
-      resultsWriter.recordFailure(e);
-      counter.incrementFailed();
-
-      if (accumulator != null && accumulator.isInitialized()) {
-        // We already started sending a response when we got the error message.  In this case we just give up
-        // and hope that the partial stream generates a meaningful failure message for our client.  We could consider
-        // also throwing the exception body into the response to make it easier for the client to choke if it manages
-        // to parse a meaningful object out, but that's potentially an API change so we leave that as an exercise for
-        // the future.
-        return null;
-      }
-    }
-
     switch (e.getCategory()) {
       case INVALID_INPUT:
       case UNAUTHORIZED:
@@ -244,19 +249,36 @@ public abstract class QueryResultPusher
         counter.incrementTimedOut();
         break;
     }
+  }
+
+  private Response handleDruidException(ResultsWriter resultsWriter, DruidException e)
+  {
+    incrementQueryCounterForException(e);
+
+    if (resultsWriter != null) {
+      resultsWriter.recordFailure(e);
+
+      if (accumulator != null && accumulator.isInitialized()) {
+        // We already started sending a response when we got the error message.  In this case we just give up
+        // and hope that the partial stream generates a meaningful failure message for our client.  We could consider
+        // also throwing the exception body into the response to make it easier for the client to choke if it manages
+        // to parse a meaningful object out, but that's potentially an API change so we leave that as an exercise for
+        // the future.
+        trailerFields.put(QueryResource.ERROR_MESSAGE_TRAILER_HEADER, e.getMessage());
+        trailerFields.put(QueryResource.RESPONSE_COMPLETE_TRAILER_HEADER, "false");
+        return null;
+      }
+    }
 
     if (response == null) {
-      final Response.ResponseBuilder bob = Response
-          .status(e.getStatusCode())
-          .type(contentType)
-          .entity(new ErrorResponse(e));
-
-      bob.header(QueryResource.QUERY_ID_RESPONSE_HEADER, queryId);
-      for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
-        bob.header(entry.getKey(), entry.getValue());
-      }
-
-      return bob.build();
+      return handleDruidExceptionBeforeResponseStarted(
+          e,
+          contentType,
+          ImmutableMap.<String, String>builder()
+                      .putAll(extraHeaders)
+                      .put(QueryResource.QUERY_ID_RESPONSE_HEADER, queryId)
+                      .build()
+      );
     } else {
       if (response.isCommitted()) {
         QueryResource.NO_STACK_LOGGER.warn(e, "Response was committed without the accumulator writing anything!?");
@@ -276,6 +298,27 @@ public abstract class QueryResultPusher
       }
       return null;
     }
+  }
+
+  /**
+   * Generates a response for a {@link DruidException} that occurs prior to any query results being sent out.
+   */
+  public static Response handleDruidExceptionBeforeResponseStarted(
+      final DruidException e,
+      final MediaType contentType,
+      final Map<String, String> extraHeaders
+  )
+  {
+    final Response.ResponseBuilder bob = Response
+        .status(e.getStatusCode())
+        .type(contentType)
+        .entity(new ErrorResponse(e));
+
+    for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
+      bob.header(entry.getKey(), entry.getValue());
+    }
+
+    return bob.build();
   }
 
   public interface ResultsWriter extends Closeable
@@ -380,43 +423,14 @@ public abstract class QueryResultPusher
 
         DirectDruidClient.removeMagicResponseContextFields(responseContext);
 
-        // Limit the response-context header, see https://github.com/apache/druid/issues/2331
-        // Note that Response.ResponseBuilder.header(String key,Object value).build() calls value.toString()
-        // and encodes the string using ASCII, so 1 char is = 1 byte
-        ResponseContext.SerializationResult serializationResult;
-        try {
-          serializationResult = responseContext.serializeWith(
-              jsonMapper,
-              responseContextConfig.getMaxResponseContextHeaderSize()
-          );
-        }
-        catch (JsonProcessingException e) {
-          log.info(e, "Problem serializing to JSON!?");
-          serializationResult = new ResponseContext.SerializationResult("Could not serialize", "Could not serialize");
-        }
+        validateAndWriteResponseContextHeader();
 
-        if (serializationResult.isTruncated()) {
-          final String logToPrint = StringUtils.format(
-              "Response Context truncated for id [%s]. Full context is [%s].",
-              queryId,
-              serializationResult.getFullResult()
-          );
-          if (responseContextConfig.shouldFailOnTruncatedResponseContext()) {
-            log.error(logToPrint);
-            throw new QueryInterruptedException(
-                new TruncatedResponseContextException(
-                    "Serialized response context exceeds the max size[%s]",
-                    responseContextConfig.getMaxResponseContextHeaderSize()
-                ),
-                selfNode.getHostAndPortToUse()
-            );
-          } else {
-            log.warn(logToPrint);
-          }
-        }
-
-        response.setHeader(QueryResource.HEADER_RESPONSE_CONTEXT, serializationResult.getResult());
         response.setContentType(contentType.toString());
+
+        if (response instanceof org.eclipse.jetty.server.Response) {
+          org.eclipse.jetty.server.Response jettyResponse = (org.eclipse.jetty.server.Response) response;
+          jettyResponse.setTrailers(() -> trailerFields);
+        }
 
         try {
           out = new CountingOutputStream(response.getOutputStream());
@@ -435,6 +449,50 @@ public abstract class QueryResultPusher
 
         initialized = true;
       }
+    }
+
+    /**
+     * Serializes the response context header and sets it in the final {@link #response} header. It enforces the max
+     * header size limit and throws {@link QueryInterruptedException} if truncation is disallowed and the context is too large.
+     */
+    private void validateAndWriteResponseContextHeader()
+    {
+      // Limit the response-context header, see https://github.com/apache/druid/issues/2331
+      // Note that Response.ResponseBuilder.header(String key,Object value).build() calls value.toString()
+      // and encodes the string using ASCII, so 1 char is = 1 byte
+      ResponseContext.SerializationResult serializationResult;
+      try {
+        serializationResult = responseContext.serializeWith(
+            jsonMapper,
+            responseContextConfig.getMaxResponseContextHeaderSize()
+        );
+      }
+      catch (JsonProcessingException e) {
+        log.info(e, "Problem serializing to JSON!?");
+        serializationResult = new ResponseContext.SerializationResult("Could not serialize", "Could not serialize");
+      }
+
+      if (serializationResult.isTruncated()) {
+        final String logToPrint = StringUtils.format(
+            "Response Context truncated for id [%s]. Full context is [%s].",
+            queryId,
+            serializationResult.getFullResult()
+        );
+
+        if (responseContextConfig.shouldFailOnTruncatedResponseContext()) {
+          log.error(logToPrint);
+          throw new QueryInterruptedException(
+              new TruncatedResponseContextException(
+                  "Serialized response context exceeds the max size[%s]",
+                  responseContextConfig.getMaxResponseContextHeaderSize()
+              ),
+              selfNode.getHostAndPortToUse()
+          );
+        } else {
+          log.warn(logToPrint);
+        }
+      }
+      response.setHeader(QueryResource.HEADER_RESPONSE_CONTEXT, serializationResult.getResult());
     }
 
     @Override
@@ -460,6 +518,9 @@ public abstract class QueryResultPusher
       if (!initialized) {
         initialize();
       }
+
+      // call this again here since we're at the end and everything should have accumulated.
+      validateAndWriteResponseContextHeader();
       writer.writeResponseEnd();
     }
 

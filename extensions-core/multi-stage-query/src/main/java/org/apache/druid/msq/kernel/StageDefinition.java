@@ -40,15 +40,19 @@ import org.apache.druid.frame.write.FrameWriters;
 import org.apache.druid.java.util.common.Either;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.msq.exec.FrameWriterSpec;
 import org.apache.druid.msq.exec.Limits;
+import org.apache.druid.msq.exec.StageProcessor;
 import org.apache.druid.msq.input.InputSpec;
 import org.apache.druid.msq.input.InputSpecs;
+import org.apache.druid.msq.input.table.TableInputSpec;
 import org.apache.druid.msq.statistics.ClusterByStatisticsCollector;
 import org.apache.druid.msq.statistics.ClusterByStatisticsCollectorImpl;
 import org.apache.druid.segment.column.RowSignature;
 
 import javax.annotation.Nullable;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -65,14 +69,13 @@ import java.util.function.Supplier;
  * {@link WorkerAssignmentStrategy} in play and depending on the number of distinct inputs available. (For example:
  * if there is only one input file, then there can be only one worker.)
  * <p>
- * Each stage has a {@link FrameProcessorFactory} describing the work it does. Output frames written by these
+ * Each stage has a {@link StageProcessor} describing the work it does. Output frames written by these
  * processors have the signature given by {@link #getSignature()}.
  * <p>
  * Each stage has a {@link ShuffleSpec} describing the shuffle that occurs as part of the stage. The shuffle spec is
- * optional: if none is provided, then the {@link FrameProcessorFactory} directly writes to output partitions. If a
- * shuffle spec is provided, then the {@link FrameProcessorFactory} is expected to sort each output frame individually
- * according to {@link ShuffleSpec#clusterBy()}. The execution system handles the rest, including sorting data across
- * frames and producing the appropriate output partitions.
+ * optional: if none is provided, then the {@link StageProcessor} writes to output partitions that are aligned with
+ * input partitions. If a shuffle spec is provided, then the {@link StageProcessor} is expected to write its output
+ * to output channels in accordance with the {@link ShuffleSpec}.
  * <p>
  * The rarely-used parameter {@link #getShuffleCheckHasMultipleValues()} controls whether the execution system
  * checks, while shuffling, if the key used for shuffling has any multi-value fields. When this is true, the method
@@ -89,7 +92,7 @@ public class StageDefinition
   private final List<InputSpec> inputSpecs;
   private final IntSet broadcastInputNumbers;
   @SuppressWarnings("rawtypes")
-  private final FrameProcessorFactory processorFactory;
+  private final StageProcessor processor;
   private final RowSignature signature;
   private final int maxWorkerCount;
   private final boolean shuffleCheckHasMultipleValues;
@@ -105,7 +108,7 @@ public class StageDefinition
       @JsonProperty("id") final StageId id,
       @JsonProperty("input") final List<InputSpec> inputSpecs,
       @JsonProperty("broadcast") final Set<Integer> broadcastInputNumbers,
-      @SuppressWarnings("rawtypes") @JsonProperty("processor") final FrameProcessorFactory processorFactory,
+      @SuppressWarnings("rawtypes") @JsonProperty("processor") final StageProcessor processor,
       @JsonProperty("signature") final RowSignature signature,
       @Nullable @JsonProperty("shuffleSpec") final ShuffleSpec shuffleSpec,
       @JsonProperty("maxWorkerCount") final int maxWorkerCount,
@@ -123,7 +126,7 @@ public class StageDefinition
       this.broadcastInputNumbers = new IntAVLTreeSet(broadcastInputNumbers);
     }
 
-    this.processorFactory = Preconditions.checkNotNull(processorFactory, "processorFactory");
+    this.processor = Preconditions.checkNotNull(processor, "processor");
     this.signature = Preconditions.checkNotNull(signature, "signature");
     this.shuffleSpec = shuffleSpec;
     this.maxWorkerCount = maxWorkerCount;
@@ -147,6 +150,13 @@ public class StageDefinition
     }
   }
 
+  public static boolean mustGatherResultKeyStatistics(@Nullable final ShuffleSpec shuffleSpec)
+  {
+    return shuffleSpec != null
+           && shuffleSpec.kind() == ShuffleKind.GLOBAL_SORT
+           && ((GlobalSortShuffleSpec) shuffleSpec).mustGatherResultKeyStatistics();
+  }
+
   public static StageDefinitionBuilder builder(final int stageNumber)
   {
     return new StageDefinitionBuilder(stageNumber);
@@ -157,7 +167,7 @@ public class StageDefinition
     return new StageDefinitionBuilder(stageDef.getStageNumber())
         .inputs(stageDef.getInputSpecs())
         .broadcastInputs(stageDef.getBroadcastInputNumbers())
-        .processorFactory(stageDef.getProcessorFactory())
+        .processor(stageDef.getProcessor())
         .signature(stageDef.getSignature())
         .shuffleSpec(stageDef.doesShuffle() ? stageDef.getShuffleSpec() : null)
         .maxWorkerCount(stageDef.getMaxWorkerCount())
@@ -196,9 +206,9 @@ public class StageDefinition
 
   @JsonProperty("processor")
   @SuppressWarnings("rawtypes")
-  public FrameProcessorFactory getProcessorFactory()
+  public StageProcessor getProcessor()
   {
-    return processorFactory;
+    return processor;
   }
 
   @JsonProperty
@@ -294,6 +304,21 @@ public class StageDefinition
   }
 
   /**
+   * Returns a set of all datasources used by all {@link TableInputSpec} in the stageDefinition.
+   */
+  public Set<String> getDatasources()
+  {
+    final Set<String> datasources = new HashSet<>();
+    for (InputSpec inputSpec : getInputSpecs()) {
+      if (inputSpec instanceof TableInputSpec) {
+        TableInputSpec tableInputSpec = (TableInputSpec) inputSpec;
+        datasources.add(tableInputSpec.getDataSource());
+      }
+    }
+    return datasources;
+  }
+
+  /**
    * Returns true, if the shuffling stage requires key statistics from the workers.
    * <br></br>
    * Returns false, if the stage does not shuffle.
@@ -303,14 +328,10 @@ public class StageDefinition
    * For eg: we know there's exactly one partition in query shapes like `select with limit`.
    * <br></br>
    * In such cases, we return a false.
-   *
-   * @return
    */
   public boolean mustGatherResultKeyStatistics()
   {
-    return shuffleSpec != null
-           && shuffleSpec.kind() == ShuffleKind.GLOBAL_SORT
-           && ((GlobalSortShuffleSpec) shuffleSpec).mustGatherResultKeyStatistics();
+    return mustGatherResultKeyStatistics(shuffleSpec);
   }
 
   public Either<Long, ClusterByPartitions> generatePartitionBoundariesForShuffle(
@@ -334,7 +355,10 @@ public class StageDefinition
     }
   }
 
-  public ClusterByStatisticsCollector createResultKeyStatisticsCollector(final int maxRetainedBytes)
+  public ClusterByStatisticsCollector createResultKeyStatisticsCollector(
+      final FrameType frameType,
+      final int maxRetainedBytes
+  )
   {
     if (!mustGatherResultKeyStatistics()) {
       throw new ISE("No statistics needed for stage[%d]", getStageNumber());
@@ -343,6 +367,7 @@ public class StageDefinition
     return ClusterByStatisticsCollectorImpl.create(
         shuffleSpec.clusterBy(),
         signature,
+        frameType,
         maxRetainedBytes,
         Limits.MAX_PARTITION_BUCKETS,
         ((GlobalSortShuffleSpec) shuffleSpec).doesAggregate(),
@@ -351,32 +376,36 @@ public class StageDefinition
   }
 
   /**
-   * Create the {@link FrameWriterFactory} that must be used by {@link #getProcessorFactory()}.
+   * Create the {@link FrameWriterFactory} that must be used by {@link #getProcessor()}.
    *
    * Calls {@link MemoryAllocatorFactory#newAllocator()} for each frame.
    */
-  public FrameWriterFactory createFrameWriterFactory(final MemoryAllocatorFactory memoryAllocatorFactory)
+  public FrameWriterFactory createFrameWriterFactory(
+      final FrameWriterSpec writerSpec,
+      final MemoryAllocatorFactory allocatorFactory
+  )
   {
     return FrameWriters.makeFrameWriterFactory(
-        FrameType.ROW_BASED,
-        memoryAllocatorFactory,
+        writerSpec.getRowBasedFrameType(),
+        allocatorFactory,
         signature,
 
         // Main processor does not sort when there is a hash going on, even if isSort = true. This is because
         // FrameChannelHashPartitioner is expected to be attached to the processor and do the sorting. We don't
         // want to double-sort.
-        doesShuffle() && !shuffleSpec.kind().isHash() ? getClusterBy().getColumns() : Collections.emptyList()
+        doesShuffle() && !shuffleSpec.kind().isHash() ? getClusterBy().getColumns() : Collections.emptyList(),
+        writerSpec.getRemoveNullBytes()
     );
   }
 
   /**
-   * Create the {@link FrameWriterFactory} that must be used by {@link #getProcessorFactory()}.
+   * Create the {@link FrameWriterFactory} that must be used by {@link #getProcessor()}.
    *
    * Re-uses the same {@link MemoryAllocator} for each frame.
    */
-  public FrameWriterFactory createFrameWriterFactory(final MemoryAllocator allocator)
+  public FrameWriterFactory createFrameWriterFactory(final FrameWriterSpec writerSpec, final MemoryAllocator allocator)
   {
-    return createFrameWriterFactory(new SingleMemoryAllocatorFactory(allocator));
+    return createFrameWriterFactory(writerSpec, new SingleMemoryAllocatorFactory(allocator));
   }
 
   public FrameReader getFrameReader()
@@ -399,7 +428,7 @@ public class StageDefinition
            && Objects.equals(id, that.id)
            && Objects.equals(inputSpecs, that.inputSpecs)
            && Objects.equals(broadcastInputNumbers, that.broadcastInputNumbers)
-           && Objects.equals(processorFactory, that.processorFactory)
+           && Objects.equals(processor, that.processor)
            && Objects.equals(signature, that.signature)
            && Objects.equals(shuffleSpec, that.shuffleSpec);
   }
@@ -411,7 +440,7 @@ public class StageDefinition
         id,
         inputSpecs,
         broadcastInputNumbers,
-        processorFactory,
+        processor,
         signature,
         maxWorkerCount,
         shuffleCheckHasMultipleValues,
@@ -426,7 +455,7 @@ public class StageDefinition
            "id=" + id +
            ", inputSpecs=" + inputSpecs +
            (!broadcastInputNumbers.isEmpty() ? ", broadcastInputStages=" + broadcastInputNumbers : "") +
-           ", processorFactory=" + processorFactory +
+           ", processor=" + processor +
            ", signature=" + signature +
            ", maxWorkerCount=" + maxWorkerCount +
            ", shuffleSpec=" + shuffleSpec +

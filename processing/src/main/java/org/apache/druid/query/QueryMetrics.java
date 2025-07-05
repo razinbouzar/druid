@@ -244,6 +244,11 @@ public interface QueryMetrics<QueryType extends Query<?>>
   void segment(String segmentIdentifier);
 
   /**
+   * If a projection was used during segment processing, set its name as the projection dimension
+   */
+  void projection(String projection);
+
+  /**
    * @deprecated use {@link #filterBundle(FilterBundle.BundleInfo)} instead to collect details about filters which were
    * used to construct {@link org.apache.druid.segment.BitmapOffset} or
    * {@link org.apache.druid.segment.vector.BitmapVectorOffset}.
@@ -349,6 +354,11 @@ public interface QueryMetrics<QueryType extends Query<?>>
    * Emitted once per segment.
    */
   QueryMetrics<QueryType> reportSegmentAndCacheTime(long timeNs);
+
+  /**
+   * Emits iff a given query polled the result-level cache and the success of that operation.
+   */
+  QueryMetrics<QueryType> reportResultCachePoll(boolean hit);
 
   /**
    * Registers "cpu time" metric.

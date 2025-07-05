@@ -67,7 +67,8 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
   private static final String PAYLOAD_TYPE = "BLOB";
   private static final String COLLATION = "";
 
-  static final int DEFAULT_MAX_TRIES = 10;
+  static final int QUIET_RETRIES = 2;
+  static final int DEFAULT_MAX_TRIES = 3;
 
   private final Supplier<MetadataStorageConnectorConfig> config;
   private final Supplier<MetadataStorageTablesConfig> tablesConfigSupplier;
@@ -154,7 +155,13 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
   )
   {
     try {
-      return RetryUtils.retry(() -> getDBI().withHandle(callback), myShouldRetry, DEFAULT_MAX_TRIES);
+      return RetryUtils.retry(
+          () -> getDBI().withHandle(callback),
+          myShouldRetry,
+          null,
+          DEFAULT_MAX_TRIES,
+          "Metadata transaction failed"
+      );
     }
     catch (Exception e) {
       Throwables.propagateIfPossible(e);
@@ -170,7 +177,14 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
   public <T> T retryTransaction(final TransactionCallback<T> callback, final int quietTries, final int maxTries)
   {
     try {
-      return RetryUtils.retry(() -> getDBI().inTransaction(TransactionIsolationLevel.READ_COMMITTED, callback), shouldRetry, quietTries, maxTries);
+      return RetryUtils.retry(
+          () -> getDBI().inTransaction(TransactionIsolationLevel.READ_COMMITTED, callback),
+          shouldRetry,
+          quietTries,
+          maxTries,
+          null,
+          "Metadata write transaction failed"
+      );
     }
     catch (Exception e) {
       Throwables.propagateIfPossible(e);
@@ -297,6 +311,11 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
     alterPendingSegmentsTable(tableName);
   }
 
+  /**
+   * The {@code dataSource} column stores the supervisor ID.
+   * It has not been renamed to retain backwards compatibility.
+   * Supervisors created without an explicit supervisor id default to using the datasource name.
+   */
   public void createDataSourceTable(final String tableName)
   {
     createTable(
@@ -318,7 +337,7 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
 
   public void createSegmentTable(final String tableName)
   {
-    List<String> columns = new ArrayList<>();
+    final List<String> columns = new ArrayList<>();
     columns.add("id VARCHAR(255) NOT NULL");
     columns.add("dataSource VARCHAR(255) %4$s NOT NULL");
     columns.add("created_date VARCHAR(255) NOT NULL");
@@ -518,25 +537,6 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
     );
   }
 
-  public void createLogTable(final String tableName, final String entryTypeName)
-  {
-    createTable(
-        tableName,
-        ImmutableList.of(
-            StringUtils.format(
-                "CREATE TABLE %1$s (\n"
-                + "  id %2$s NOT NULL,\n"
-                + "  %4$s_id VARCHAR(255) DEFAULT NULL,\n"
-                + "  log_payload %3$s,\n"
-                + "  PRIMARY KEY (id)\n"
-                + ")",
-                tableName, getSerialType(), getPayloadType(), entryTypeName
-            ),
-            StringUtils.format("CREATE INDEX idx_%1$s_%2$s_id ON %1$s(%2$s_id)", tableName, entryTypeName)
-        )
-    );
-  }
-
   public void createLockTable(final String tableName, final String entryTypeName)
   {
     createTable(
@@ -587,6 +587,8 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
     Map<String, String> columnNameTypes = new HashMap<>();
     columnNameTypes.put("used_status_last_updated", "VARCHAR(255)");
 
+    columnNameTypes.put("upgraded_from_segment_id", "VARCHAR(255)");
+
     if (centralizedDatasourceSchemaConfig.isEnabled()) {
       columnNameTypes.put("schema_fingerprint", "VARCHAR(255)");
       columnNameTypes.put("num_rows", "BIGINT");
@@ -619,6 +621,14 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
     }
 
     alterTable(tableName, alterCommands);
+
+    final Set<String> createdIndexSet = getIndexOnTable(tableName);
+    createIndex(
+        tableName,
+        StringUtils.format("idx_%1$s_datasource_upgraded_from_segment_id", tableName),
+        ImmutableList.of("dataSource", "upgraded_from_segment_id"),
+        createdIndexSet
+    );
   }
 
   @Override
@@ -631,7 +641,7 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
   )
   {
     return getDBI().inTransaction(
-        new TransactionCallback<Void>()
+        new TransactionCallback<>()
         {
           @Override
           public Void inTransaction(Handle handle, TransactionStatus transactionStatus)
@@ -677,7 +687,7 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
   {
     return getDBI().inTransaction(
         TransactionIsolationLevel.REPEATABLE_READ,
-        new TransactionCallback<Boolean>()
+        new TransactionCallback<>()
         {
           @Override
           public Boolean inTransaction(Handle handle, TransactionStatus transactionStatus)
@@ -804,7 +814,6 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
       final MetadataStorageTablesConfig tablesConfig = tablesConfigSupplier.get();
       final String entryType = tablesConfig.getTaskEntryType();
       prepareTaskEntryTable(tablesConfig.getEntryTable(entryType));
-      createLogTable(tablesConfig.getLogTable(entryType), entryType);
       createLockTable(tablesConfig.getLockTable(entryType), entryType);
     }
   }
@@ -896,12 +905,34 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
     return makeDatasource(getConfig(), getValidationQuery());
   }
 
+  public final <T> T retryReadOnlyTransaction(
+      final TransactionCallback<T> callback,
+      int quietTries,
+      int maxTries
+  )
+  {
+    try {
+      return RetryUtils.retry(
+          () -> getDBI().inTransaction(TransactionIsolationLevel.READ_COMMITTED, callback),
+          shouldRetry,
+          quietTries,
+          maxTries,
+          null,
+          "Metadata read transaction failed"
+      );
+    }
+    catch (Exception e) {
+      Throwables.throwIfUnchecked(e);
+      throw new RuntimeException(e);
+    }
+  }
+
   public final <T> T inReadOnlyTransaction(
       final TransactionCallback<T> callback
   )
   {
     return getDBI().withHandle(
-        new HandleCallback<T>()
+        new HandleCallback<>()
         {
           @Override
           public T withHandle(Handle handle) throws Exception
@@ -1041,7 +1072,7 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
           ResultSet resultSet = getIndexInfo(databaseMetaData, tableName);
           while (resultSet.next()) {
             String indexName = resultSet.getString("INDEX_NAME");
-            if (org.apache.commons.lang.StringUtils.isNotBlank(indexName)) {
+            if (org.apache.commons.lang3.StringUtils.isNotBlank(indexName)) {
               res.add(StringUtils.toUpperCase(indexName));
             }
           }

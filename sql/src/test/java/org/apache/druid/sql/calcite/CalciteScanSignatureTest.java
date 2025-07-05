@@ -19,21 +19,21 @@
 
 package org.apache.druid.sql.calcite;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
-import com.google.inject.Injector;
+import com.google.inject.Inject;
 import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.tools.ValidationException;
 import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.segment.column.ColumnType;
-import org.apache.druid.server.QueryLifecycleFactory;
+import org.apache.druid.sql.SqlStatementFactory;
 import org.apache.druid.sql.calcite.CalciteScanSignatureTest.ScanSignatureComponentSupplier;
 import org.apache.druid.sql.calcite.filtration.Filtration;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
 import org.apache.druid.sql.calcite.rel.DruidQuery;
 import org.apache.druid.sql.calcite.run.EngineFeature;
+import org.apache.druid.sql.calcite.run.NativeSqlEngine;
 import org.apache.druid.sql.calcite.run.QueryMaker;
 import org.apache.druid.sql.calcite.run.SqlEngine;
 import org.apache.druid.sql.calcite.util.CalciteTests;
@@ -65,6 +65,7 @@ public class CalciteScanSignatureTest extends BaseCalciteQueryTest
                     ColumnType.STRING
                 ))
                 .columns("v0")
+                .columnTypes(ColumnType.STRING)
                 .resultFormat(ScanQuery.ResultFormat.RESULT_FORMAT_COMPACTED_LIST)
                 .context(context)
                 .build()
@@ -91,6 +92,7 @@ public class CalciteScanSignatureTest extends BaseCalciteQueryTest
                 .dataSource(CalciteTests.DATASOURCE2)
                 .intervals(querySegmentSpec(Filtration.eternity()))
                 .columns("v0")
+                .columnTypes(ColumnType.LONG)
                 .virtualColumns(expressionVirtualColumn(
                     "v0",
                     "CAST(\"dim1\", 'LONG')",
@@ -101,9 +103,7 @@ public class CalciteScanSignatureTest extends BaseCalciteQueryTest
                 .limit(2)
                 .build()
         ),
-        useDefault ? ImmutableList.of(
-            new Object[]{0L}, new Object[]{0L}
-        ) : ImmutableList.of(
+        ImmutableList.of(
             new Object[]{null}, new Object[]{null}
         )
     );
@@ -116,22 +116,20 @@ public class CalciteScanSignatureTest extends BaseCalciteQueryTest
       super(tempFolderProducer);
     }
 
+
     @Override
-    public SqlEngine createEngine(
-        QueryLifecycleFactory qlf,
-        ObjectMapper queryJsonMapper,
-        Injector injector
-    )
+    public Class<? extends SqlEngine> getSqlEngineClass()
     {
-      // Create an engine that says yes to EngineFeature.SCAN_NEEDS_SIGNATURE.
-      return new ScanSignatureTestSqlEngine(super.createEngine(qlf, queryJsonMapper, injector));
+      return ScanSignatureTestSqlEngine.class;
     }
 
+    // Create an engine that says yes to EngineFeature.SCAN_NEEDS_SIGNATURE.
     private static class ScanSignatureTestSqlEngine implements SqlEngine
     {
       private final SqlEngine parent;
 
-      public ScanSignatureTestSqlEngine(final SqlEngine parent)
+      @Inject
+      public ScanSignatureTestSqlEngine(final NativeSqlEngine parent)
       {
         this.parent = parent;
       }
@@ -155,13 +153,21 @@ public class CalciteScanSignatureTest extends BaseCalciteQueryTest
       }
 
       @Override
-      public RelDataType resultTypeForSelect(RelDataTypeFactory typeFactory, RelDataType validatedRowType)
+      public RelDataType resultTypeForSelect(
+          RelDataTypeFactory typeFactory,
+          RelDataType validatedRowType,
+          Map<String, Object> queryContext
+      )
       {
         return validatedRowType;
       }
 
       @Override
-      public RelDataType resultTypeForInsert(RelDataTypeFactory typeFactory, RelDataType validatedRowType)
+      public RelDataType resultTypeForInsert(
+          RelDataTypeFactory typeFactory,
+          RelDataType validatedRowType,
+          Map<String, Object> queryContext
+      )
       {
         throw new UnsupportedOperationException();
       }
@@ -175,6 +181,12 @@ public class CalciteScanSignatureTest extends BaseCalciteQueryTest
 
       @Override
       public QueryMaker buildQueryMakerForInsert(IngestDestination destination, RelRoot relRoot, PlannerContext plannerContext)
+      {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public SqlStatementFactory getSqlStatementFactory()
       {
         throw new UnsupportedOperationException();
       }

@@ -31,6 +31,7 @@ import org.apache.druid.data.input.impl.DimensionsSpec;
 import org.apache.druid.indexer.HadoopIOConfig;
 import org.apache.druid.indexer.HadoopIngestionSpec;
 import org.apache.druid.indexer.HadoopTuningConfig;
+import org.apache.druid.indexer.granularity.ArbitraryGranularitySpec;
 import org.apache.druid.indexer.hadoop.DatasourceIngestionSpec;
 import org.apache.druid.indexing.common.task.HadoopIndexTask;
 import org.apache.druid.indexing.overlord.IndexerMetadataStorageCoordinator;
@@ -43,12 +44,9 @@ import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.metadata.MetadataSupervisorManager;
-import org.apache.druid.metadata.SqlSegmentsMetadataManager;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.segment.indexing.DataSchema;
-import org.apache.druid.segment.indexing.granularity.ArbitraryGranularitySpec;
-import org.apache.druid.segment.realtime.firehose.ChatHandlerProvider;
-import org.apache.druid.segment.transform.TransformSpec;
+import org.apache.druid.segment.realtime.ChatHandlerProvider;
 import org.apache.druid.server.security.AuthorizerMapper;
 import org.apache.druid.timeline.DataSegment;
 import org.joda.time.Interval;
@@ -77,7 +75,6 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
   private final ObjectMapper objectMapper;
   private final MetadataSupervisorManager metadataSupervisorManager;
   private final IndexerMetadataStorageCoordinator metadataStorageCoordinator;
-  private final SqlSegmentsMetadataManager sqlSegmentsMetadataManager;
   private final TaskMaster taskMaster;
   private final TaskStorage taskStorage;
   private final MaterializedViewTaskConfig config;
@@ -101,7 +98,6 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
       @JacksonInject TaskMaster taskMaster,
       @JacksonInject TaskStorage taskStorage,
       @JacksonInject MetadataSupervisorManager metadataSupervisorManager,
-      @JacksonInject SqlSegmentsMetadataManager sqlSegmentsMetadataManager,
       @JacksonInject IndexerMetadataStorageCoordinator metadataStorageCoordinator,
       @JacksonInject MaterializedViewTaskConfig config,
       @JacksonInject AuthorizerMapper authorizerMapper,
@@ -143,7 +139,6 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
     this.taskMaster = taskMaster;
     this.taskStorage = taskStorage;
     this.metadataSupervisorManager = metadataSupervisorManager;
-    this.sqlSegmentsMetadataManager = sqlSegmentsMetadataManager;
     this.metadataStorageCoordinator = metadataStorageCoordinator;
     this.authorizerMapper = authorizerMapper;
     this.chatHandlerProvider = chatHandlerProvider;
@@ -184,7 +179,6 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
         tuningConfig.getAppendableIndexSpec(),
         tuningConfig.getMaxRowsInMemory(),
         tuningConfig.getMaxBytesInMemory(),
-        tuningConfig.isUseMaxMemoryEstimates(),
         tuningConfig.isLeaveIntermediate(),
         tuningConfig.isCleanupOnFailure(),
         tuningConfig.isOverwriteFiles(),
@@ -211,14 +205,13 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
     );
 
     // generate DataSchema
-    DataSchema dataSchema = new DataSchema(
-        dataSourceName,
-        parser,
-        aggregators,
-        granularitySpec,
-        TransformSpec.NONE,
-        objectMapper
-    );
+    DataSchema dataSchema = DataSchema.builder()
+                                      .withDataSource(dataSourceName)
+                                      .withParserMap(parser)
+                                      .withAggregators(aggregators)
+                                      .withGranularity(granularitySpec)
+                                      .withObjectMapper(objectMapper)
+                                      .build();
 
     // generate DatasourceIngestionSpec
     DatasourceIngestionSpec datasourceIngestionSpec = new DatasourceIngestionSpec(
@@ -356,7 +349,6 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
         taskMaster,
         taskStorage,
         metadataSupervisorManager,
-        sqlSegmentsMetadataManager,
         metadataStorageCoordinator,
         config,
         this
@@ -387,7 +379,6 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
         taskMaster,
         taskStorage,
         metadataSupervisorManager,
-        sqlSegmentsMetadataManager,
         metadataStorageCoordinator,
         config,
         authorizerMapper,
@@ -414,7 +405,6 @@ public class MaterializedViewSupervisorSpec implements SupervisorSpec
         taskMaster,
         taskStorage,
         metadataSupervisorManager,
-        sqlSegmentsMetadataManager,
         metadataStorageCoordinator,
         config,
         authorizerMapper,

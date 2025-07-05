@@ -27,7 +27,7 @@ README
 .pmdruleset.xml
 .java-version
 integration-tests/gen-scripts/
-/bin/
+**/bin/
 *.hprof
 **/.ipynb_checkpoints/
 website/.yarn/
@@ -49,3 +49,4 @@ nbproject
 nbactions.xml
 nb-configuration.xml
 *.iq.out
+*.iq@*.out
