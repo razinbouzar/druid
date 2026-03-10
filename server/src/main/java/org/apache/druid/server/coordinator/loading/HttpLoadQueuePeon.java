@@ -38,6 +38,7 @@ import org.apache.druid.server.coordination.DataSegmentChangeCallback;
 import org.apache.druid.server.coordination.DataSegmentChangeHandler;
 import org.apache.druid.server.coordination.DataSegmentChangeRequest;
 import org.apache.druid.server.coordination.DataSegmentChangeResponse;
+import org.apache.druid.server.coordination.DruidServerMetadata;
 import org.apache.druid.server.coordination.SegmentChangeRequestLoad;
 import org.apache.druid.server.coordination.SegmentChangeStatus;
 import org.apache.druid.server.coordinator.BytesAccumulatingResponseHandler;
@@ -50,6 +51,8 @@ import org.apache.druid.server.coordinator.stats.Stats;
 import org.apache.druid.server.http.SegmentLoadingCapabilities;
 import org.apache.druid.server.http.SegmentLoadingMode;
 import org.apache.druid.timeline.DataSegment;
+
+import javax.annotation.Nullable;
 import org.jboss.netty.handler.codec.http.HttpHeaders;
 import org.jboss.netty.handler.codec.http.HttpMethod;
 import org.joda.time.Duration;
@@ -128,6 +131,11 @@ public class HttpLoadQueuePeon implements LoadQueuePeon
   private final ObjectWriter requestBodyWriter;
   private final SegmentLoadingCapabilities serverCapabilities;
 
+  @Nullable
+  private final DruidServerMetadata serverMetadata;
+  @Nullable
+  private final CoordinatorSegmentChangelog changelog;
+
   public HttpLoadQueuePeon(
       String baseUrl,
       ObjectMapper jsonMapper,
@@ -136,6 +144,21 @@ public class HttpLoadQueuePeon implements LoadQueuePeon
       Supplier<SegmentLoadingMode> loadingModeSupplier,
       ScheduledExecutorService processingExecutor,
       ExecutorService callBackExecutor
+  )
+  {
+    this(baseUrl, jsonMapper, httpClient, config, loadingModeSupplier, processingExecutor, callBackExecutor, null, null);
+  }
+
+  public HttpLoadQueuePeon(
+      String baseUrl,
+      ObjectMapper jsonMapper,
+      HttpClient httpClient,
+      HttpLoadQueuePeonConfig config,
+      Supplier<SegmentLoadingMode> loadingModeSupplier,
+      ScheduledExecutorService processingExecutor,
+      ExecutorService callBackExecutor,
+      @Nullable DruidServerMetadata serverMetadata,
+      @Nullable CoordinatorSegmentChangelog changelog
   )
   {
     this.jsonMapper = jsonMapper;
@@ -147,6 +170,8 @@ public class HttpLoadQueuePeon implements LoadQueuePeon
 
     this.serverId = baseUrl;
     this.loadingModeSupplier = loadingModeSupplier;
+    this.serverMetadata = serverMetadata;
+    this.changelog = changelog;
     this.serverCapabilities = fetchSegmentLoadingCapabilities();
   }
 
@@ -388,12 +413,25 @@ public class HttpLoadQueuePeon implements LoadQueuePeon
           @Override
           public void addSegment(DataSegment segment, DataSegmentChangeCallback callback)
           {
+            if (status.getState() == SegmentChangeStatus.State.SUCCESS
+                && changelog != null
+                && serverMetadata != null) {
+              // Record the confirmed load to the changelog BEFORE invoking callbacks.
+              // This guarantees that for a segment move (A -> B), Load(B) appears in the
+              // changelog before the move callback fires and queues Drop(A).
+              changelog.segmentLoaded(serverMetadata, segment);
+            }
             updateSuccessOrFailureInHolder(segmentsToLoad.remove(segment), status);
           }
 
           @Override
           public void removeSegment(DataSegment segment, DataSegmentChangeCallback callback)
           {
+            if (status.getState() == SegmentChangeStatus.State.SUCCESS
+                && changelog != null
+                && serverMetadata != null) {
+              changelog.segmentDropped(serverMetadata, segment);
+            }
             updateSuccessOrFailureInHolder(segmentsToDrop.remove(segment), status);
           }
 

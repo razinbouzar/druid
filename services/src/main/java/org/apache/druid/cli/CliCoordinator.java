@@ -84,10 +84,12 @@ import org.apache.druid.server.coordinator.config.HttpLoadQueuePeonConfig;
 import org.apache.druid.server.coordinator.duty.CoordinatorCustomDuty;
 import org.apache.druid.server.coordinator.duty.CoordinatorCustomDutyGroup;
 import org.apache.druid.server.coordinator.duty.CoordinatorCustomDutyGroups;
+import org.apache.druid.server.coordinator.loading.CoordinatorSegmentChangelog;
 import org.apache.druid.server.coordinator.loading.LoadQueueTaskMaster;
 import org.apache.druid.server.http.BrokerDynamicConfigSyncer;
 import org.apache.druid.server.http.ClusterResource;
 import org.apache.druid.server.http.CoordinatorBrokerConfigsResource;
+import org.apache.druid.server.http.CoordinatorSegmentChangelogResource;
 import org.apache.druid.server.http.CoordinatorCompactionConfigsResource;
 import org.apache.druid.server.http.CoordinatorCompactionResource;
 import org.apache.druid.server.http.CoordinatorDynamicConfigSyncer;
@@ -229,6 +231,9 @@ public class CliCoordinator extends ServerRunnable
             binder.bind(JettyServerInitializer.class)
                   .to(CoordinatorJettyServerInitializer.class);
 
+            binder.bind(CoordinatorSegmentChangelog.class).in(LazySingleton.class);
+            LifecycleModule.register(binder, CoordinatorSegmentChangelog.class);
+
             Jerseys.addResource(binder, CoordinatorResource.class);
             Jerseys.addResource(binder, CoordinatorCompactionResource.class);
             Jerseys.addResource(binder, CoordinatorDynamicConfigsResource.class);
@@ -243,6 +248,7 @@ public class CliCoordinator extends ServerRunnable
             Jerseys.addResource(binder, LookupCoordinatorResource.class);
             Jerseys.addResource(binder, ClusterResource.class);
             Jerseys.addResource(binder, HttpServerInventoryViewResource.class);
+            Jerseys.addResource(binder, CoordinatorSegmentChangelogResource.class);
 
             LifecycleModule.register(binder, Server.class);
             LifecycleModule.register(binder, DataSourcesResource.class);
@@ -279,7 +285,8 @@ public class CliCoordinator extends ServerRunnable
               DruidCoordinatorConfig config,
               @EscalatedGlobal HttpClient httpClient,
               Lifecycle lifecycle,
-              CoordinatorConfigManager coordinatorConfigManager
+              CoordinatorConfigManager coordinatorConfigManager,
+              CoordinatorSegmentChangelog changelog
           )
           {
             final ExecutorService callBackExec = Execs.singleThreaded("LoadQueuePeon-callbackexec--%d");
@@ -290,7 +297,8 @@ public class CliCoordinator extends ServerRunnable
                 callBackExec,
                 config.getHttpLoadQueuePeonConfig(),
                 httpClient,
-                coordinatorConfigManager::getCurrentDynamicConfig
+                coordinatorConfigManager::getCurrentDynamicConfig,
+                changelog
             );
           }
         }

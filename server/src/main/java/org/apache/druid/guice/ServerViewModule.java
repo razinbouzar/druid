@@ -40,6 +40,12 @@ public class ServerViewModule implements Module
   public static final String SERVERVIEW_TYPE_PROPERTY = "druid.serverview.type";
   public static final String SERVERVIEW_TYPE_HTTP = "http";
   public static final String SERVERVIEW_TYPE_BATCH = "batch";
+  /**
+   * Routes broker segment placement notifications through the Coordinator's
+   * ordered changelog to fix the race condition in issue #18738.
+   * Set {@code druid.serverview.type=coordinator} on broker nodes to enable.
+   */
+  public static final String SERVERVIEW_TYPE_COORDINATOR = "coordinator";
 
   @Override
   public void configure(Binder binder)

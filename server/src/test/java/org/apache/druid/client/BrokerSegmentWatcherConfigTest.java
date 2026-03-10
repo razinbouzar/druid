@@ -77,5 +77,25 @@ public class BrokerSegmentWatcherConfigTest
     Assert.assertEquals(ImmutableSet.of("t3", "t4"), config.getIgnoredTiers());
     Assert.assertEquals(ImmutableSet.of("ds1", "ds2"), config.getWatchedDataSources());
     Assert.assertTrue(config.isWatchRealtimeTasks());
+
+    // useCoordinatorChangelog defaults to false
+    json = "{}";
+    config = MAPPER.readValue(
+        MAPPER.writeValueAsString(
+            MAPPER.readValue(json, BrokerSegmentWatcherConfig.class)
+        ),
+        BrokerSegmentWatcherConfig.class
+    );
+    Assert.assertFalse(config.isUseCoordinatorChangelog());
+
+    // useCoordinatorChangelog can be set to true
+    json = "{ \"useCoordinatorChangelog\": true }";
+    config = MAPPER.readValue(
+        MAPPER.writeValueAsString(
+            MAPPER.readValue(json, BrokerSegmentWatcherConfig.class)
+        ),
+        BrokerSegmentWatcherConfig.class
+    );
+    Assert.assertTrue(config.isUseCoordinatorChangelog());
   }
 }

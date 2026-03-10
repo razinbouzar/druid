@@ -25,6 +25,8 @@ import com.google.common.util.concurrent.ListenableFuture;
 import org.apache.druid.java.util.common.RE;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.java.util.http.client.HttpClient;
+import org.apache.druid.server.coordination.DruidServerMetadata;
+import org.apache.druid.server.coordination.ServerType;
 import org.apache.druid.java.util.http.client.Request;
 import org.apache.druid.java.util.http.client.response.HttpResponseHandler;
 import org.apache.druid.segment.TestHelper;
@@ -343,6 +345,100 @@ public class HttpLoadQueuePeonTest
 
     Assert.assertEquals(1, httpLoadQueuePeon.calculateBatchSize(SegmentLoadingMode.NORMAL));
     Assert.assertEquals(3, httpLoadQueuePeon.calculateBatchSize(SegmentLoadingMode.TURBO));
+  }
+
+  @Test
+  public void testChangelogRecordsLoadOnSuccess() throws Exception
+  {
+    final CoordinatorSegmentChangelog changelog = new CoordinatorSegmentChangelog();
+    final DruidServerMetadata serverMeta = new DruidServerMetadata(
+        "dummy", "dummy", null, 1000L, null, ServerType.HISTORICAL, "tier1", 0
+    );
+    final HttpLoadQueuePeon peonWithChangelog = new HttpLoadQueuePeon(
+        "http://dummy:4000",
+        MAPPER,
+        httpClient,
+        new HttpLoadQueuePeonConfig(null, null, 10),
+        () -> SegmentLoadingMode.NORMAL,
+        new WrappingScheduledExecutorService(
+            "HttpLoadQueuePeonTest-%s",
+            httpClient.processingExecutor,
+            true
+        ),
+        httpClient.callbackExecutor,
+        serverMeta,
+        changelog
+    );
+    peonWithChangelog.start();
+    try {
+      final DataSegment segment = segments.get(0);
+      peonWithChangelog.loadSegment(segment, SegmentAction.LOAD, null);
+      httpClient.sendRequestToServerAndHandleResponse();
+
+      final org.apache.druid.server.coordination.ChangeRequestsSnapshot<CoordinatorSegmentChangeEvent> snapshot =
+          changelog.getChangesSince(org.apache.druid.server.coordination.ChangeRequestHistory.Counter.ZERO).get();
+
+      Assert.assertEquals(1, snapshot.getRequests().size());
+      Assert.assertTrue("Load event must be recorded", snapshot.getRequests().get(0).isLoad());
+      Assert.assertEquals(segment, snapshot.getRequests().get(0).getSegment());
+      Assert.assertEquals(serverMeta, snapshot.getRequests().get(0).getServer());
+    }
+    finally {
+      peonWithChangelog.stop();
+      changelog.stop();
+    }
+  }
+
+  @Test
+  public void testChangelogRecordsDropOnSuccess() throws Exception
+  {
+    final CoordinatorSegmentChangelog changelog = new CoordinatorSegmentChangelog();
+    final DruidServerMetadata serverMeta = new DruidServerMetadata(
+        "dummy", "dummy", null, 1000L, null, ServerType.HISTORICAL, "tier1", 0
+    );
+    final HttpLoadQueuePeon peonWithChangelog = new HttpLoadQueuePeon(
+        "http://dummy:4000",
+        MAPPER,
+        httpClient,
+        new HttpLoadQueuePeonConfig(null, null, 10),
+        () -> SegmentLoadingMode.NORMAL,
+        new WrappingScheduledExecutorService(
+            "HttpLoadQueuePeonTest-%s",
+            httpClient.processingExecutor,
+            true
+        ),
+        httpClient.callbackExecutor,
+        serverMeta,
+        changelog
+    );
+    peonWithChangelog.start();
+    try {
+      final DataSegment segment = segments.get(0);
+      peonWithChangelog.dropSegment(segment, null);
+      httpClient.sendRequestToServerAndHandleResponse();
+
+      final org.apache.druid.server.coordination.ChangeRequestsSnapshot<CoordinatorSegmentChangeEvent> snapshot =
+          changelog.getChangesSince(org.apache.druid.server.coordination.ChangeRequestHistory.Counter.ZERO).get();
+
+      Assert.assertEquals(1, snapshot.getRequests().size());
+      Assert.assertFalse("Drop event must be recorded", snapshot.getRequests().get(0).isLoad());
+      Assert.assertEquals(segment, snapshot.getRequests().get(0).getSegment());
+      Assert.assertEquals(serverMeta, snapshot.getRequests().get(0).getServer());
+    }
+    finally {
+      peonWithChangelog.stop();
+      changelog.stop();
+    }
+  }
+
+  @Test
+  public void testChangelogNotRecordedWhenNull()
+  {
+    // Default constructor uses null changelog — must not throw.
+    final DataSegment segment = segments.get(0);
+    httpLoadQueuePeon.loadSegment(segment, SegmentAction.LOAD, null);
+    httpClient.sendRequestToServerAndHandleResponse();
+    // No exception means changelog null-guard is working correctly.
   }
 
   private LoadPeonCallback markSegmentProcessed(DataSegment segment)

@@ -28,7 +28,8 @@ import org.apache.druid.guice.ServerViewModule;
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = ServerViewModule.TYPE, defaultImpl = FilteredHttpServerInventoryViewProvider.class)
 @JsonSubTypes(value = {
     @JsonSubTypes.Type(name = ServerViewModule.SERVERVIEW_TYPE_BATCH, value = FilteredBatchServerInventoryViewProvider.class),
-    @JsonSubTypes.Type(name = ServerViewModule.SERVERVIEW_TYPE_HTTP, value = FilteredHttpServerInventoryViewProvider.class)
+    @JsonSubTypes.Type(name = ServerViewModule.SERVERVIEW_TYPE_HTTP, value = FilteredHttpServerInventoryViewProvider.class),
+    @JsonSubTypes.Type(name = ServerViewModule.SERVERVIEW_TYPE_COORDINATOR, value = FilteredCoordinatorInventoryViewProvider.class)
 })
 public interface FilteredServerInventoryViewProvider extends Provider<FilteredServerInventoryView>
 {

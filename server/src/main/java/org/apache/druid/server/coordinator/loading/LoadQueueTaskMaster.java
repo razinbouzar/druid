@@ -28,6 +28,8 @@ import org.apache.druid.java.util.http.client.HttpClient;
 import org.apache.druid.server.coordinator.CoordinatorDynamicConfig;
 import org.apache.druid.server.coordinator.config.HttpLoadQueuePeonConfig;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -51,6 +53,9 @@ public class LoadQueueTaskMaster
   private final HttpClient httpClient;
   private final Supplier<CoordinatorDynamicConfig> coordinatorDynamicConfigSupplier;
 
+  @Nullable
+  private final CoordinatorSegmentChangelog changelog;
+
   @GuardedBy("this")
   private final AtomicBoolean isLeader = new AtomicBoolean(false);
 
@@ -65,12 +70,26 @@ public class LoadQueueTaskMaster
       Supplier<CoordinatorDynamicConfig> coordinatorDynamicConfigSupplier
   )
   {
+    this(jsonMapper, peonExec, callbackExec, config, httpClient, coordinatorDynamicConfigSupplier, null);
+  }
+
+  public LoadQueueTaskMaster(
+      ObjectMapper jsonMapper,
+      ScheduledExecutorService peonExec,
+      ExecutorService callbackExec,
+      HttpLoadQueuePeonConfig config,
+      HttpClient httpClient,
+      Supplier<CoordinatorDynamicConfig> coordinatorDynamicConfigSupplier,
+      @Nullable CoordinatorSegmentChangelog changelog
+  )
+  {
     this.jsonMapper = jsonMapper;
     this.peonExec = peonExec;
     this.callbackExec = callbackExec;
     this.config = config;
     this.httpClient = httpClient;
     this.coordinatorDynamicConfigSupplier = coordinatorDynamicConfigSupplier;
+    this.changelog = changelog;
   }
 
   private LoadQueuePeon createPeon(ImmutableDruidServer server)
@@ -82,7 +101,9 @@ public class LoadQueueTaskMaster
         config,
         () -> coordinatorDynamicConfigSupplier.get().getLoadingModeForServer(server.getName()),
         peonExec,
-        callbackExec
+        callbackExec,
+        server.getMetadata(),
+        changelog
     );
   }
 
